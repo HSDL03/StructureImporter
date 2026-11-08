@@ -22,11 +22,7 @@
                 "split",
                 "manual",
                 "help2",
-                "freeze",
-                "maparea",
-                "map",
-                "turbo",
-                "fast"
+                "freeze"
             ]
         },
         {
@@ -54,8 +50,7 @@
                 "threads",
                 "parallel",
                 "nbtlimit",
-                "freezetime",
-                "mapspeed"
+                "freezetime"
             ]
         },
         {

@@ -27,12 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "map", "turbo", "fast",
-               "manual", "help2"]
-
-# ---------------------------------------------------------------- 存档版本
-# 改过默认值的选项要用版本号迁移，否则老存档会一直带着旧默认（比如极速档）。
-CFG_VERSION = 1
+               "nbtlimit", "freeze", "freezetime", "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -41,12 +36,6 @@ EXTRA_KEY = "si_dir"
 # ---------------------------------------------------------------- 分区导入
 SPLIT_DEFAULT = False     # 默认关，用 /structureim split on 或界面按钮打开
 SPLIT_SIZE = 16           # 分区边长（格）：默认按 16×16 的区块切片
-# 自适应分区：16×16 对"又薄又大"的平面是灾难——768×768 单层会被切成 2304 个区，
-# 每区才 256 块，光是来回 TP + 等区块就比写方块慢十倍。按体量把边长放大到
-# 每区 SECTION_TARGET 块左右，分区数直接掉两个数量级。
-SPLIT_AUTO = True         # 关掉就永远用 SPLIT_SIZE
-SPLIT_SIZE_MAX = 128      # 自适应上限（128 格 = 8×8 区块，正好在玩家加载半径内）
-SECTION_TARGET = 16000    # 每区目标方块数（越大分区越少、TP 越少，但单区更重）
 
 # ---------------------------------------------------------------- 防大型结构缺失
 # 开启后给每个分区临时加原版 /tickingarea 常加载区块，等它加载完再放置，
@@ -100,27 +89,8 @@ TP_ZONE_SECS = 3           # 九宫格巡逻：每个区停多少秒（保证区
 TP_ZONE_DIV = 3            # 每幅地图切 3x3=9 个区
 MAP_GIVE_WAIT = 40        # 发地图：TP 到单元中心后等多少 tick 再 give（防空白图）
 MAP_HOLD_SECS = 4          # 地图放进玩家主手停留几秒让引擎渲染地形（否则挂墙是空白图）
-MAP_TA_RADIUS = 4          # 旧版圆形常加载半径（已改用方形 _map_ta_add，仅留作对照）
+MAP_TA_RADIUS = 4          # 发图前给整幅 128x128 单元挂常加载区块（圆半径 4 chunk 覆盖 8x8）
 MAP_TA_WAIT = 60           # 常加载区块挂上后等多少 tick 让区块真正加载完再 give
-
-# ---------------------------------------------------------------- 地图画速度档
-# 慢的根源：每张图都要「挂常加载 -> 等 3 秒 -> TP 九个区、每区停 3 秒 -> 拿图 4 秒」。
-# 三处提速：①常加载改成方形精确覆盖整幅（圆会切掉四角，所以以前得靠巡逻补）
-#          ②下一张图的常加载在画当前图时提前挂好（等待与绘制重叠）
-#          ③每区等待从"秒级"降到"tick 级"（区块本来就都加载着）
-# 0 = 稳（旧行为，最保险）  1 = 快（默认）  2 = 极速（可能有缺角，缺就降档）
-MAP_SPEED_DEFAULT = 0
-MAP_SQ_Y = 40              # 方形常加载的纵向厚度（区块只看 xz，给够就行）
-MAP_AREA_DEFAULT = 1       # 常加载形状：1 = 方形（精确盖住整幅，快档前提）
-MAP_AREA_RADIUS = 4        # 圆形常加载半径（0 档 / 对照用；圆角盖不满要巡逻补）
-MAP_TA_WAIT_FAST = 30      # 快档：本张图第一次挂常加载后等多少 tick
-MAP_ZONE_WAIT = 10         # 快档：巡逻每个区停多少 tick
-MAP_ZONE_WAIT_FAST = 4     # 极速档：每区停多少 tick
-MAP_HOLD_TICKS = 30        # 快档：地图在主手停留多少 tick（1.5 秒）
-MAP_HOLD_FAST = 10         # 极速档：0.5 秒
-MAP_PREFETCH = True        # 快档/极速档：提前给下一张图挂常加载（overlap 掉等待）
-MAP_MOUNT_BATCH = 4        # 挂框每 tick 挂几张（原来一张 5 tick，10 张要 2.5 秒）
-MAP_MOUNT_WAIT = 20        # 全部画完回墙前等多少 tick（墙区块加载）
 
 TURBO_DEFAULT = False     # 急速模式：分区等待降到 1 tick（速度换卡顿风险）
 
@@ -175,9 +145,9 @@ LIQUID_BLOCKS = ("minecraft:water", "minecraft:lava")
 WATERLOG_KEYS = ("waterlogged",)
 
 # ---------------------------------------------------------------- 冻结（水不乱跑）
-# 保留能力但默认关：回滚后的基线不主动改游戏规则（随机刻/昼夜/天气），
-# 需要时用 /structureim freeze on 手动开。
-FREEZE_DEFAULT = False    # 默认不动游戏规则
+# 导入期间把"时间流逝"按住：液体单独最后写入，写完再守若干秒把被引擎改动的水改回去；
+# 同时尽量关掉随机刻/昼夜/天气（只改能读到的游戏规则，结束时原样恢复）。
+FREEZE_DEFAULT = True     # 默认开启
 FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
 FREEZE_SECS_MAX = 60.0
 FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒回写

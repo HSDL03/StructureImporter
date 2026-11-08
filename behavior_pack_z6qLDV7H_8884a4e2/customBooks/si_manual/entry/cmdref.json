@@ -8,7 +8,7 @@
         },
         {
             "type": "textPage",
-            "content": "§e巡图参数（地图画）\n§f/structureim znum <1-9>\n§f每幅地图巡几个分区，默认 3\n§f（实测 3 区即画满；缺角就调大）\n\n§f/structureim zwait <1-30>\n§f每区停留秒数，默认 3\n§f设置存档保存，重启不丢\n\n§e速度\n§f/structureim fast\n§f一键提速：后台解析 + 邻区并行\n§f+ 急速 + 满预算（大结构首选）\n\n§f/structureim turbo <开|关>\n§f急速模式：换区几乎不等区块\n\n§f/structureim budget <2-25>\n§f每 tick 写入预算（毫秒），默认 12\n§f越大越快越容易卡，写入量自动调速\n\n§f/structureim threads <1-8>\n§f结构解析线程，≥2 走后台解析不卡\n\n§f/structureim parallel <1-4>\n§f相邻分区并行：提前加载邻区\n\n§e地图与杂项\n§f/structureim map <开|关>\n§f地图画模式（关掉=导完就结束）\n\n§f/structureim mapspeed <0-2>\n§f地图画速度：0稳(默认) 1快 2极速\n\n§f/structureim maparea <方形|圆形>\n§f地图常加载形状，默认方形盖满整幅\n\n§f/structureim nbtlimit <0|8-1024>\n§f物品 NBT 上限，默认 0 = 不裁剪\n\n§f/structureim freeze <开|关>\n§f冻结时间流逝防乱流（默认关）\n\n§f/structureim freezetime <0-60>\n§f开冻结时放完液体再守几秒，默认 6\n\n§f/structureim split <开|关>\n§f/structureim selftest\n§f/structureim manual §f—— 聊天框版教程"
+            "content": "§e巡图参数（地图画）\n§f/structureim znum <1-9>\n§f每幅地图巡几个分区，默认 3\n§f（实测 3 区即画满；缺角就调大）\n\n§f/structureim zwait <1-30>\n§f每区停留秒数，默认 3\n§f设置存档保存，重启不丢\n\n§e其它\n§f/structureim budget <2-20>\n§f每 tick 写入预算（毫秒），默认 7\n§f越大越快越容易卡，写入量自动调速\n\n§f/structureim threads <1-8>\n§f结构解析线程，≥2 走后台解析不卡\n\n§f/structureim parallel <1-4>\n§f相邻分区并行：提前加载邻区\n\n§f/structureim nbtlimit <0|8-1024>\n§f物品 NBT 上限，默认 0 = 不裁剪\n\n§f/structureim freeze <开|关>\n§f冻结时间流逝，水不乱跑（默认开）\n\n§f/structureim freezetime <0-60>\n§f放完液体后再守几秒，默认 6\n\n§f/structureim split <开|关>\n§f/structureim selftest\n§f/structureim manual §f—— 聊天框版教程"
         }
     ]
 }
