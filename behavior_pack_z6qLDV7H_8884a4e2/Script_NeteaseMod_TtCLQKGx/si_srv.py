@@ -205,6 +205,8 @@ HELP = [
     u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳 1快(默认) 2极速",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
+    u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
+    u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
     u"§f/structureim nbtlimit <0|8-1024> §7物品NBT上限KB，0=不裁剪（默认）",
@@ -250,6 +252,7 @@ class Job(object):
         self.mob_fail = 0
         self.sections = sections or [{"blocks": range(len(blocks)),
                                       "wake": [], "ents": [], "label": u"全部"}]
+        self.side = cfg.SPLIT_SIZE      # 本次分区的实际边长（_pick_split_size 会覆盖）
         self.sec_i = 0
         self.cursor = 0
         self.base = base
@@ -790,6 +793,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_freezetime(pid, a1)
         elif action in (u"mapspeed", u"mapspd", u"mspeed"):
             self.cmd_mapspeed(pid, a1)
+        elif action == u"turbo":
+            self.cmd_turbo(pid, a1)
+        elif action == u"fast":
+            self.cmd_fast(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -977,6 +984,46 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.freeze_secs = v
         self._save()
         self.tell(pid, u"§a液体守护时长：§f%.1f 秒" % v)
+
+    def cmd_turbo(self, pid, text):
+        """急速模式：分区等待压到最短、写入预算拉满（大结构提速的主要手段）"""
+        t = (text or u"").strip().lower()
+        if t in (u"on", u"1", u"开", u"true"):
+            v = True
+        elif t in (u"off", u"0", u"关", u"false"):
+            v = False
+        elif not t:
+            v = not self.turbo
+        else:
+            self.tell(pid, u"§e用法：/structureim turbo <on/off> §7当前 %s" %
+                      (u"开" if self.turbo else u"关"))
+            self.tell(pid, u"§7开启后：等区块 3 tick、写入预算 %.0f ms，求快不求稳" %
+                      cfg.WRITE_BUDGET_MS_TURBO)
+            return
+        self.turbo = v
+        self._save()
+        if v:
+            self.tell(pid, u"§a急速模式：§f开 §7（等区块 3 tick、预算 %.0f ms，写失败自动重试兜底）" %
+                      cfg.WRITE_BUDGET_MS_TURBO)
+        else:
+            self.tell(pid, u"§a急速模式：§f关")
+
+    def cmd_fast(self, pid, text):
+        """一键提速：后台解析 + 急速 + 满预算 + 邻区并行
+
+        大结构（几十万块）的导入时间基本由三件事决定：
+        写得多快（预算）、换区等多久（急速）、解析卡不卡主线程（线程）。
+        这条命令把三者一起拉满，等价于手敲四条。
+        """
+        self.threads = max(2, cfg.THREADS_DEFAULT)
+        self.parallel = max(3, cfg.PARALLEL_DEFAULT)
+        self.turbo = True
+        self.budget = cfg.WRITE_BUDGET_MS_TURBO
+        self._save()
+        self.tell(pid, u"§a已切到提速组合：§f线程 %d · 邻区并行 %d · 急速 · 预算 %.0f ms" %
+                  (self.threads, self.parallel, self.budget))
+        self.tell(pid, u"§7大结构会自动分区（边长按体量放大到 %d 格），不用手动开 split" %
+                  cfg.SPLIT_SIZE_MAX)
 
     def cmd_nbtlimit(self, pid, text):
         """物品 NBT 上限：0 = 不裁剪（默认，盒中盒原样保留）"""
@@ -1227,10 +1274,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§c结构太大：%d 方块（上限 %d）" % (data.count, cfg.MAX_BLOCKS))
             return
 
-        # 超大文件自动强制分块模式：反正会切成 <50KB 的小块逐个导入，不会卡死
-        use_chunk = self.chunk or data.count > cfg.BIG_FILE_BLOCKS
-        if use_chunk and not self.chunk:
-            self.tell(pid, u"§e大型结构（%d 方块）：已自动开启分块导入" % data.count)
+        # 分块模式只在玩家手动开时才用。
+        # 以前"超过 15 万块自动开分块"，结果把已经按体量放大好的 128 格分区
+        # 又按 50KB 切碎——562 个小区，光换区就比写方块慢（a.mcstructure 实测）。
+        # 写入早就由时间预算分帧控制，不需要再切小块。
+        use_chunk = self.chunk
 
         blocks, size = mcst.rotate(data.blocks, data.size, rotation)
         blocks = self._with_aux(blocks)
@@ -1267,8 +1315,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if any(kw in low for kw in cfg.WASH_HINTS):
                 wash.append(i)
 
-        sections = self._build_sections(blocks, wake, ents, use_chunk)
+        # 分区边长按体量自适应：大平面不再被切成两千多个小区（每区才 256 块，
+        # 换区开销比写方块还贵）。side 同时用于"跨行远传"的判定。
+        side = self._pick_split_size(blocks)
+        sections = self._build_sections(blocks, wake, ents, use_chunk, side)
         self.job = Job(pid, entry.rel, blocks, base, dim, ents, wake, sections, mobs)
+        self.job.side = side
         self.job.wash_idx = wash
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
@@ -1721,7 +1773,40 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             secs += len(sections) * (cfg.TP_LOAD_WAIT_TURBO // 2) / 20.0
         return max(0.1, secs)
 
-    def _build_sections(self, blocks, wake, ents, use_chunk=None):
+    def _pick_split_size(self, blocks):
+        """按体量挑分区边长（16 / 32 / 48 … 直到 SPLIT_SIZE_MAX）
+
+        768×768 的单层平面按 16×16 切 = 2304 个区、每区 256 块：写完 256 块只要
+        几毫秒，却要花几十 tick 等区块、TP、预取——时间全耗在换区上。
+        这里按"每区大约 SECTION_TARGET 块"反推边长，分区数能掉两个数量级。
+        """
+        if not cfg.SPLIT_AUTO or not blocks:
+            return max(1, int(cfg.SPLIT_SIZE))
+        n = len(blocks)
+        # 采样算水平包围盒（几十万块全量扫也快，但没必要）
+        step = max(1, n // 4000)
+        x0 = x1 = blocks[0][0]
+        z0 = z1 = blocks[0][2]
+        for i in _range(0, n, step):
+            b = blocks[i]
+            x, z = b[0], b[2]
+            if x < x0:
+                x0 = x
+            elif x > x1:
+                x1 = x
+            if z < z0:
+                z0 = z
+            elif z > z1:
+                z1 = z
+        area = max(1, (x1 - x0 + 1) * (z1 - z0 + 1))
+        dens = float(n) / area
+        target = max(256, int(cfg.SECTION_TARGET))
+        side = int(math.sqrt(target / max(0.000001, dens)))
+        side = ((side + 15) // 16) * 16      # 向上取整到 16 的倍数（对齐区块列）
+        side = max(int(cfg.SPLIT_SIZE), min(int(cfg.SPLIT_SIZE_MAX), side))
+        return side
+
+    def _build_sections(self, blocks, wake, ents, use_chunk=None, side=None):
         """按水平区块把整张结构切成若干分区
 
         分区模式下，一区的方块放完 -> 补红石唤醒 -> 写方块实体，再进下一区。
@@ -1738,14 +1823,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         liq = [i for i in _range(len(blocks)) if blocks[i][3] in cfg.LIQUID_BLOCKS]
         self._liquid_idx = liq
         liqset = set(liq)
-        if not (self.split or self.tick_mode or use_chunk):
+        size = max(1, int(side or cfg.SPLIT_SIZE))
+        # 自适应边长被放大（>16）本身就是"这是个该分区的大结构"的信号：
+        # 不分区就没人跟着 TP，768 格外的区块根本没加载，写多少失败多少。
+        if not (self.split or self.tick_mode or use_chunk or size > cfg.SPLIT_SIZE):
             blk = [i for i in _range(len(blocks)) if i not in liqset]
             return [{"blocks": blk,
                      "wake": wake,
                      "ents": _range(len(ents)),
                      "label": u"全部"}]
 
-        size = max(1, int(cfg.SPLIT_SIZE))
         groups = {}
 
         def group(x, z):
@@ -2096,6 +2183,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         t0 = time.time()
         hit_time = False
         bdict = {}                         # (name, aux, states) -> 方块字典，本区复用
+        # 快路径：几十万块的无状态方块（石/混凝土/木板…）直接调引擎，省掉
+        # 每块一次 _place_block 的函数调用与参数打包。带 states 的才走慢路径。
+        set_block = comp.SetBlockNew
+        raw_ok = True
 
         while job.cursor < total and written < limit:
             i = idx[job.cursor]
@@ -2112,8 +2203,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                         blk["states"] = states
                     bdict[key] = blk
                 # 建造阶段不触发邻居更新：否则红石/火把会边放边被弹掉
-                if self._place_block(comp, (bx + x, by + y, bz + z),
-                                     blk, states, dim, False):
+                pos = (bx + x, by + y, bz + z)
+                if not states and raw_ok:
+                    try:
+                        ok = set_block(pos, blk, 0, dim, True, False)
+                    except TypeError:
+                        raw_ok = False       # 这个版本签名不同，后面全都走 _place_block
+                        ok = self._place_block(comp, pos, blk, states, dim, False)
+                else:
+                    ok = self._place_block(comp, pos, blk, states, dim, False)
+                if ok:
                     job.ok += 1
                 else:
                     job.fail += 1
@@ -2655,7 +2754,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 continue
             c = self._sec_center(job, sec)
             # 只预取相邻的（跨行远传那种跳几百格的不算，加载了也用不上）
-            if max(abs(c[0] - cur_c[0]), abs(c[2] - cur_c[2])) > cfg.SPLIT_SIZE * 2.0:
+            if max(abs(c[0] - cur_c[0]), abs(c[2] - cur_c[2])) > getattr(job, "side", cfg.SPLIT_SIZE) * 2.0:
                 continue
             if cmdComp is None:
                 cmdComp = self._command()
@@ -2704,13 +2803,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.waiting = True
             wait = cfg.TP_LOAD_WAIT_TURBO if self.turbo else cfg.TP_LOAD_WAIT
             # 竖排导入跨行时是远距离瞬移（如 1,45 -> 2,0），区块最易跟不上导致
-            # 该分区大量写失败：强制降速等 4 秒再恢复原速
-            big = tpd >= cfg.TP_BIG_JUMP
+            # 该分区大量写失败：强制降速等 4 秒再恢复原速。
+            # 判据要跟着分区边长走：128 格的分区，相邻两区中心本来就差 128 格，
+            # 拿固定的 128 当阈值会把正常换区全判成"跨行远传"，每区白等 4 秒。
+            big_jump = max(cfg.TP_BIG_JUMP, getattr(job, "side", cfg.SPLIT_SIZE) * 2)
+            big = tpd >= big_jump
             if big:
                 wait = max(1, int(self.big_wait * 20))
             elif sec is not None and sec.get("pf"):
-                # 这区早在上一区写的时候就挂上常加载了，区块已经加载好
-                wait = max(3, cfg.PREFETCH_WAIT)
+                # 这区早在上一区写的时候就挂上常加载了，区块已经加载好。
+                # 急速模式下它比普通 TP 还该快——以前这里排在 turbo 判断前面，
+                # 反而让"预取好的区"等得比没预取的更久（白等 8 tick）。
+                wait = 2 if self.turbo else max(3, cfg.PREFETCH_WAIT)
             elif self.turbo:
                 wait = max(2, cfg.TP_LOAD_WAIT_TURBO // 2)   # 急速：0.1 秒就走
             elif job.last_fail == 0 and job.ok > 0:

@@ -22,7 +22,9 @@
                 "split",
                 "manual",
                 "help2",
-                "freeze"
+                "freeze",
+                "turbo",
+                "fast"
             ]
         },
         {

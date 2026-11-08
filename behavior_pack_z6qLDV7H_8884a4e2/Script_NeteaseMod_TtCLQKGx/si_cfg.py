@@ -27,7 +27,8 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "manual", "help2"]
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "turbo", "fast",
+               "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -36,6 +37,12 @@ EXTRA_KEY = "si_dir"
 # ---------------------------------------------------------------- 分区导入
 SPLIT_DEFAULT = False     # 默认关，用 /structureim split on 或界面按钮打开
 SPLIT_SIZE = 16           # 分区边长（格）：默认按 16×16 的区块切片
+# 自适应分区：16×16 对"又薄又大"的平面是灾难——768×768 单层会被切成 2304 个区，
+# 每区才 256 块，光是来回 TP + 等区块就比写方块慢十倍。按体量把边长放大到
+# 每区 SECTION_TARGET 块左右，分区数直接掉两个数量级。
+SPLIT_AUTO = True         # 关掉就永远用 SPLIT_SIZE
+SPLIT_SIZE_MAX = 128      # 自适应上限（128 格 = 8×8 区块，正好在玩家加载半径内）
+SECTION_TARGET = 16000    # 每区目标方块数（越大分区越少、TP 越少，但单区更重）
 
 # ---------------------------------------------------------------- 防大型结构缺失
 # 开启后给每个分区临时加原版 /tickingarea 常加载区块，等它加载完再放置，
