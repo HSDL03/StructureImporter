@@ -84,6 +84,9 @@ class SiClientSystem(clientApi.GetClientSystemCls()):
     def toggle_turbo(self, value):
         self.send_settings({"turbo": bool(value)})
 
+    def toggle_threads(self, value):
+        self.send_settings({"threads": bool(value)})
+
     def set_speed(self, value):
         self.send_settings({"speed": value})
 

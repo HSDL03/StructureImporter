@@ -2,6 +2,7 @@
 """服务端：自定义指令、目录扫描、分批放置"""
 
 import math
+import os
 import time
 import traceback
 
@@ -89,10 +90,26 @@ HELP = [
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
-    u"§f/structureim budget <2-20> §7每tick写入预算ms（默认7，越大越快越卡；急速自动翻倍）",
+    u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
+    u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
+    u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
     u"§f/structureim selftest §7环境自检",
     u"§f/structureim manual §7看分步教程（也可右键使用说明书物品）",
 ]
+
+
+def _bg_load(path, name, box):
+    """后台线程里跑的结构解析
+
+    只做「读文件 + 解压 + NBT 遍历」，**绝不调用任何引擎接口**
+    （SetBlockNew 之类必须在主线程，跨线程调会崩）。
+    结果/异常统一塞进 box，由主线程在 tick 里取走。
+    """
+    try:
+        dec = mcst.read_decompress(path)
+        box["data"] = mcst.load_prepared(dec, name, cfg.SKIP_AIR, cfg.SKIP_VOID)
+    except Exception:
+        box["err"] = traceback.format_exc()
 
 
 class Job(object):
@@ -155,6 +172,8 @@ class Job(object):
         self.ok_mark = 0
         self.fail_mark = 0
         self.last_fail = 0
+        # 相邻分区并行：提前挂常加载区块的记录 [(分区序号, area 名), ...]
+        self.pf = []
 
 
 class SiServerSystem(serverApi.GetServerSystemCls()):
@@ -175,6 +194,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zones_n = 3                    # 每幅图实际巡几个区（1~9，可 /structureim znum 调）
         self.big_wait = cfg.TP_BIG_WAIT / 20.0   # 跨行远传后降速秒数（/structureim bigwait 调）
         self.budget = cfg.WRITE_BUDGET_MS        # 每 tick 写方块的时间预算（ms，/structureim budget 调）
+        self.threads = cfg.THREADS_DEFAULT       # 多线程：>=2 时结构解析走后台线程
+        self.parallel = cfg.PARALLEL_DEFAULT     # 相邻分区并行：提前加载几个邻区
+        self._bg = None                          # 正在后台解析的任务
         self.last_bpt = 0.0                      # 上次实测「每 tick 写多少块」，用于预估耗时
         self._page = 0
         self.map_queue = None    # 导入完成后逐个发的地图
@@ -305,6 +327,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zones_n = 3
         self.big_wait = cfg.TP_BIG_WAIT / 20.0
         self.budget = cfg.WRITE_BUDGET_MS
+        self.threads = cfg.THREADS_DEFAULT
+        self.parallel = cfg.PARALLEL_DEFAULT
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
@@ -345,6 +369,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 except (TypeError, ValueError):
                     pass
                 try:
+                    th = int(util.u(raw.get("threads")))
+                    self.threads = max(1, min(cfg.THREADS_MAX, th))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    pa = int(util.u(raw.get("parallel")))
+                    self.parallel = max(1, min(cfg.PARALLEL_MAX, pa))
+                except (TypeError, ValueError):
+                    pass
+                try:
                     speed = int(util.u(raw.get("speed")))
                     self.tick_speed = max(cfg.SPEED_MIN, min(cfg.SPEED_MAX, speed))
                 except (TypeError, ValueError):
@@ -373,7 +407,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "zsecs": util.b(str(self.zone_secs)),
                  "znum": util.b(str(self.zones_n)),
                  "bigwait": util.b(str(self.big_wait)),
-                 "budget": util.b(str(self.budget))})
+                 "budget": util.b(str(self.budget)),
+                 "threads": util.b(str(self.threads)),
+                 "parallel": util.b(str(self.parallel))})
         except Exception:
             util.log_exc("save config")
 
@@ -426,7 +462,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§7  · 巡图参数：§fznum <1-9> §7每幅巡几区（默认3）、§fzwait <1-30> §7每区停几秒（默认3）")
         self.tell(pid, u"§e四、调速：§fbudget <2-20> §7每 tick 写入预算（ms，越大越快越卡，默认7）")
         self.tell(pid, u"§7  写入量会按机器实测速度自动调，卡就调小、闲着就调大")
-        self.tell(pid, u"§e五、其它开关：§fsplit 开/关 §7分区、§fturbo §7急速、§fselftest §7自检")
+        self.tell(pid, u"§e五、并行：§fthreads <1-8> §7解析线程（≥2 后台解析）、§fparallel <1-4> §7相邻分区并行")
+        self.tell(pid, u"§e六、其它开关：§fsplit 开/关 §7分区、§fturbo §7急速、§fselftest §7自检")
         self.tell(pid, u"§7详情输入 §f/structureim §7看完整命令列表。")
 
     def on_command(self, args):
@@ -469,6 +506,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if self.job is not None:
                 self._clear_areas(self.job)
             self.job = None
+            self._bg = None            # 后台解析结果直接丢弃（线程跑完自然退出）
             self.tell(pid, u"§a已中止")
         elif action in (u"pause", u"resume", u"p"):
             self.cmd_pause(pid)
@@ -484,6 +522,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_bigwait(pid, a1)
         elif action in (u"budget", u"tick"):
             self.cmd_budget(pid, a1)
+        elif action in (u"threads", u"thread"):
+            self.cmd_threads(pid, a1)
+        elif action in (u"parallel", u"para"):
+            self.cmd_parallel(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -596,6 +638,45 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§a每 tick 写入预算：§f%.0f ms §7（约 %d 块/秒起，实际按机器自动调速）" %
                   (v, int(cfg.BATCH * 20)))
 
+    def cmd_threads(self, pid, text):
+        """后台解析线程数：1 = 关闭（主线程解析），>=2 = 结构解析走后台"""
+        try:
+            v = int((text or u"").strip())
+        except ValueError:
+            self.tell(pid, u"§e用法：/structureim threads <1-%d> §7当前 %d%s" %
+                      (cfg.THREADS_MAX, self.threads,
+                       u"（后台解析）" if self.threads > 1 else u"（主线程解析）"))
+            self.tell(pid, u"§7写方块受引擎限制只能主线程，线程数只影响解析")
+            return
+        if not (1 <= v <= cfg.THREADS_MAX):
+            self.tell(pid, u"§c范围 1~%d" % cfg.THREADS_MAX)
+            return
+        self.threads = v
+        self._save()
+        if v > 1:
+            self.tell(pid, u"§a后台解析：§f开 §7（线程 %d）· 结构解析不再卡主线程" % v)
+        else:
+            self.tell(pid, u"§a后台解析：§f关 §7（主线程同步解析，最稳）")
+
+    def cmd_parallel(self, pid, text):
+        """相邻分区并行度：提前给接下来几个邻区挂常加载区块，写当前区时它们在后台加载"""
+        try:
+            v = int((text or u"").strip())
+        except ValueError:
+            self.tell(pid, u"§e用法：/structureim parallel <1-%d> §7当前 %d" %
+                      (cfg.PARALLEL_MAX, self.parallel))
+            self.tell(pid, u"§7>1 时提前加载相邻分区，轮到它时不用等区块（引擎限制：写方块仍主线程）")
+            return
+        if not (1 <= v <= cfg.PARALLEL_MAX):
+            self.tell(pid, u"§c范围 1~%d" % cfg.PARALLEL_MAX)
+            return
+        self.parallel = v
+        self._save()
+        if v > 1:
+            self.tell(pid, u"§a相邻分区并行：§f%d §7（提前加载 %d 个邻区，与写入重叠）" % (v, v - 1))
+        else:
+            self.tell(pid, u"§a相邻分区并行：§f关")
+
     def cmd_znum(self, pid, text):
         try:
             v = int((text or u"").strip())
@@ -643,6 +724,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                   (u"开" if self.split else u"关", cfg.SPLIT_SIZE))
         self.tell(pid, u"§6每 tick：§f%.0f ms 预算§7（约 %d 块起，自动调速）" %
                   (self._write_budget(), (self.job.batch if self.job else cfg.BATCH)))
+        self.tell(pid, u"§6解析线程：§f%d §7（%s）" %
+                  (self.threads, u"后台解析" if self.threads > 1 else u"主线程解析"))
+        self.tell(pid, u"§6相邻并行：§f%d §7（%s）" %
+                  (self.parallel, u"提前加载邻区" if self.parallel > 1 else u"关"))
 
     def cmd_test(self, pid):
         """在身前写一块金块，用来确认 SetBlockNew 本身是否可用"""
@@ -676,12 +761,97 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     # ------------------------------------------------------------ 放置
     def start_job(self, pid, entry, rotation):
+        """放置入口：线程数 >=2 且文件够大 -> 解析丢后台，其余照旧同步"""
+        if self.threads > 1 and self._need_bg(entry):
+            self._bg_start(pid, entry, rotation)
+            return
         try:
             data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
         except Exception as exc:
             util.log_exc("load " + entry.path)
             self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
             return
+        self._begin_job(pid, entry, rotation, data)
+
+    # ------------------------------------------------------------ 多线程解析
+    def _need_bg(self, entry):
+        """只有大结构才值得开线程：小文件同步解析反而更快（省线程开销）"""
+        try:
+            return os.path.getsize(entry.path) >= cfg.BG_LOAD_MIN_KB * 1024
+        except Exception:
+            return True
+
+    def _bg_start(self, pid, entry, rotation):
+        if self._bg is not None:
+            self.tell(pid, u"§e上一份结构还在后台解析，等它一下")
+            return
+        box = {}
+        th = None
+        try:
+            import threading
+            th = threading.Thread(target=_bg_load,
+                                  args=(entry.path, entry.name, box))
+            th.daemon = True
+        except Exception:
+            util.log_exc("thread")
+            th = None
+        if th is None:
+            # 环境不支持线程 -> 老实同步解析，功能不受影响
+            try:
+                data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
+            except Exception as exc:
+                util.log_exc("load " + entry.path)
+                self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
+                return
+            self._begin_job(pid, entry, rotation, data)
+            return
+        self._bg = {"th": th, "box": box, "pid": pid, "entry": entry,
+                    "rot": rotation, "t0": time.time(), "last": 0.0}
+        try:
+            th.start()
+        except Exception:
+            util.log_exc("thread start")
+            self._bg = None
+            data = None
+            try:
+                data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
+            except Exception as exc:
+                self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
+                return
+            self._begin_job(pid, entry, rotation, data)
+            return
+        self.tell(pid, u"§7后台解析中 §f%s §7（线程 %d，解析期间游戏不卡）…" %
+                  (util.short(entry.rel, 28), self.threads))
+
+    def _poll_bg(self):
+        """主线程轮询后台解析结果（线程不碰引擎，结果只在这里消费）"""
+        bg = self._bg
+        if bg is None:
+            return
+        try:
+            alive = bg["th"].is_alive()
+        except Exception:
+            alive = False
+        if alive:
+            now = time.time()
+            if now - bg["last"] >= 1.5:
+                bg["last"] = now
+                self.tell(bg["pid"], u"§7解析中… §f%.1f 秒" % (now - bg["t0"]))
+            return
+        self._bg = None
+        box = bg["box"]
+        if box.get("err"):
+            util.log(u"后台解析失败\n" + util.u(box["err"]))
+            self.tell(bg["pid"], u"§c读取失败：§f" + util.short(
+                util.u(box["err"].strip().splitlines()[-1]), 60))
+            return
+        data = box.get("data")
+        if data is None:
+            self.tell(bg["pid"], u"§c解析失败：后台没有拿到数据")
+            return
+        self._begin_job(bg["pid"], bg["entry"], bg["rot"], data)
+
+    def _begin_job(self, pid, entry, rotation, data):
         if data.count <= 0:
             self.tell(pid, u"§c这个结构里没有可放置的方块")
             return
@@ -1241,6 +1411,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._manual_fix_tick()
         job = self.job
         if job is None:
+            if self._bg is not None:
+                self._poll_bg()
+                return
             if self.map_queue:
                 self._give_maps()
             if self.replay_cmds:
@@ -1551,6 +1724,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def _next_section(self, job):
         self._drop_area(job)                 # 上一区的常加载区块用完就还
+        self._drop_pf(job, job.sec_i + 1)    # 只留还没轮到的预取区
         # 记录本区失败数：0 说明这台机器的区块跟得上，下一区可以少等一点；
         # 有失败说明等得不够，下一区自动加长（等于按机器实测调速）
         job.last_fail = job.fail - job.fail_mark
@@ -1636,6 +1810,80 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if job.mob_cursor >= total:
             job.phase = "done"
 
+    def _sec_box(self, job, sec):
+        """分区的绝对包围盒 (x1,y1,z1,x2,y2,z2)"""
+        bx, by, bz = job.base
+        xs = [job.blocks[i][0] for i in sec["blocks"]]
+        ys = [job.blocks[i][1] for i in sec["blocks"]]
+        zs = [job.blocks[i][2] for i in sec["blocks"]]
+        return (bx + min(xs), by + min(ys), bz + min(zs),
+                bx + max(xs), by + max(ys), bz + max(zs))
+
+    def _sec_center(self, job, sec):
+        x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0, (z1 + z2) / 2.0)
+
+    def _prefetch(self, job):
+        """写当前分区时，顺手给接下来的相邻分区挂常加载区块
+
+        区块加载由引擎异步完成：提前挂上，等轮到那一区时数据早就加载好了，
+        TP 过去几乎不用等 —— 这就是「相邻区域并行处理」在本引擎里的可行形态。
+        （方块写入本身受引擎限制只能主线程，无法真多线程。）
+        """
+        if self.parallel <= 1:
+            return
+        n = len(job.sections)
+        if job.sec_i >= n:
+            return
+        cur = job.sections[job.sec_i]
+        if not cur.get("blocks"):
+            return
+        cur_c = self._sec_center(job, cur)
+        added = 0
+        cmdComp = None
+        for k in range(job.sec_i + 1, n):
+            if added >= self.parallel - 1:
+                break
+            sec = job.sections[k]
+            if not sec.get("blocks") or sec.get("pf"):
+                continue
+            c = self._sec_center(job, sec)
+            # 只预取相邻的（跨行远传那种跳几百格的不算，加载了也用不上）
+            if max(abs(c[0] - cur_c[0]), abs(c[2] - cur_c[2])) > cfg.SPLIT_SIZE * 2.0:
+                continue
+            if cmdComp is None:
+                cmdComp = self._command()
+            if cmdComp is None:
+                return
+            x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
+            name = u"si_pf_%d" % k
+            ok = False
+            try:
+                ok = bool(cmdComp.SetCommand(util.b(
+                    u"/tickingarea add %d %d %d %d %d %d %s" %
+                    (x1, y1, z1, x2, y2, z2, name))))
+            except Exception:
+                ok = False
+            if ok:
+                sec["pf"] = True
+                job.pf.append((k, name))
+                added += 1
+
+    def _drop_pf(self, job, keep_from):
+        """释放已经走过的预取区块（常加载空位有限，别一直占着）"""
+        keep = []
+        for idx, name in job.pf:
+            if idx < keep_from:
+                cmdComp = self._command()
+                if cmdComp:
+                    try:
+                        cmdComp.SetCommand(util.b(u"/tickingarea remove %s" % name))
+                    except Exception:
+                        pass
+            else:
+                keep.append((idx, name))
+        job.pf = keep
+
     def _prepare_section(self, job):
         """进入分区前的准备：跟随 TP + 防缺失时挂常加载区块"""
         tpd = self._tp_to_section(job)
@@ -1652,6 +1900,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             big = tpd >= cfg.TP_BIG_JUMP
             if big:
                 wait = max(1, int(self.big_wait * 20))
+            elif sec is not None and sec.get("pf"):
+                # 这区早在上一区写的时候就挂上常加载了，区块已经加载好
+                wait = max(3, cfg.PREFETCH_WAIT)
             elif self.turbo:
                 wait = max(2, cfg.TP_LOAD_WAIT_TURBO // 2)   # 急速：0.1 秒就走
             elif job.last_fail == 0 and job.ok > 0:
@@ -1671,6 +1922,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                    (job.sec_i + 1, len(job.sections),
                                     u"§f急速§7" if self.turbo else u"", wait / 20.0))
             return
+        # 本区开始写入前，先把接下来的相邻分区区块挂上（异步加载与写入重叠）
+        self._prefetch(job)
         if not job.tick_enabled:
             return
         sec = self._section(job)
@@ -1753,6 +2006,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def _clear_areas(self, job):
         self._drop_area(job)
+        if getattr(job, "pf", None):
+            self._drop_pf(job, len(job.sections) + 1)
 
     def _restore_block(self, job, comp, offset, pos, dim):
         """写完实体数据后核对方块有没有被引擎换掉，变了就重放
@@ -1945,6 +2200,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if args.get("turbo") is not None:
                 self.turbo = bool(args.get("turbo"))
                 self._save()
+            if args.get("threads") is not None:
+                # 界面只有一个「并行加速」开关，开 = 解析后台 + 邻区预取，关 = 全关。
+                # 想细调用 /structureim threads / parallel
+                on = bool(args.get("threads"))
+                self.threads = 2 if on else 1
+                self.parallel = max(cfg.PARALLEL_DEFAULT, 2) if on else 1
+                self._save()
             if args.get("speed") is not None:
                 try:
                     speed = int(util.u(args.get("speed")))
@@ -2000,6 +2262,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             "chunk": bool(self.chunk),
             "map": bool(self.map_mode),
             "turbo": bool(self.turbo),
+            "threads": bool(self.threads > 1),
             "split": bool(self.split),
             "tick": bool(self.tick_mode),
             "speed": int(self.tick_speed),

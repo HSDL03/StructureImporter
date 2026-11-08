@@ -45,7 +45,9 @@
                 "znum",
                 "zsec",
                 "bigwait",
-                "budget"
+                "budget",
+                "threads",
+                "parallel"
             ]
         },
         {

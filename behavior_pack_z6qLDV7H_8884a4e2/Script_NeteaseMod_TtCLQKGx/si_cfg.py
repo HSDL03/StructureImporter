@@ -26,7 +26,8 @@ CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
-               "zwait", "znum", "zsec", "bigwait", "budget", "manual", "help2"]
+               "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
+               "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -60,6 +61,22 @@ WRITE_BATCH_MIN = 24           # 单 tick 最少写多少（保证推进）
 WRITE_BATCH_MAX = 3000         # 普通模式单 tick 上限（急速自动 ×2）
 WRITE_BATCH_START = 200        # 起步批量：慢机不会第一 tick 就卡 200ms，三几 tick 自己涨上去
 WRITE_PROBE_STEP = 24          # 探时间的初始间隔（之后按实测单块耗时自动收紧）
+
+# ---------------------------------------------------------------- 多线程（后台解析）
+# 引擎限制：SetBlockNew 等接口只能在主线程调，所以「并行写方块」不存在。
+# 能并行的是**解析**（读文件 / 解压 / NBT 遍历），把它挪出主线程后，
+# 点下放置不会再卡住一两秒（大结构尤其明显）。
+THREADS_DEFAULT = 1            # 1 = 主线程同步解析（最稳）；>=2 = 后台线程解析
+THREADS_MAX = 8
+BG_LOAD_MIN_KB = 128           # 小于这个体积的结构同步解析更快（省掉线程开销）
+
+# ---------------------------------------------------------------- 相邻分区并行
+# 引擎限制：SetBlockNew 只能在主线程调，所以「多线程写方块」不存在。
+# 能真正并行的是**区块加载**（引擎异步做的）：写当前分区时，顺手给接下来的
+# 相邻分区挂常加载区块，等轮到它时区块早已就绪 —— 效果就是邻区并行处理。
+PARALLEL_DEFAULT = 1           # 1 = 关；2~4 = 同时/提前处理这么多个相邻分区
+PARALLEL_MAX = 4
+PREFETCH_WAIT = 8              # 已预取的分区，轮到它时只需再等多少 tick（0.4 秒）
 MAX_BLOCKS = 2000000      # 单结构方块上限；超大的靠分块模式切成小块逐个导入，不再怕卡
 BIG_FILE_BLOCKS = 150000  # 超过这个数就自动强制分块模式
 TP_FOLLOW = True          # 导入时玩家自动跟随当前分区传送（保证区块加载）

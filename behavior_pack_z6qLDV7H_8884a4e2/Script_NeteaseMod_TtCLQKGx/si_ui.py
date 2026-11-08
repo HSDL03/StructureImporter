@@ -263,6 +263,7 @@ class SiSettingScreen(ScreenNode):
         self._chunk_on = False
         self._map_on = False
         self._turbo_on = False
+        self._thr_on = False
 
     def Create(self):
         self._born = time.time()
@@ -273,6 +274,7 @@ class SiSettingScreen(ScreenNode):
         self._touch("si_chunk_btn", self._on_chunk)
         self._touch("si_map_btn", self._on_map)
         self._touch("si_turbo_btn", self._on_turbo)
+        self._touch("si_thr_btn", self._on_thr)
         self._touch("si_speed_apply", self._on_speed)
         self._touch("si_set_close", self._on_close)
         self._split_label(u"分区模式：关")
@@ -280,6 +282,7 @@ class SiSettingScreen(ScreenNode):
         self._chunk_label(u"分块模式：关")
         self._map_label(u"地图画模式：关")
         self._turbo_label(u"急速模式：关")
+        self._thr_label(u"并行加速：关")
         self._speed_text(u"")
         data = self.sys.last_data if self.sys is not None else None
         if data:
@@ -329,6 +332,9 @@ class SiSettingScreen(ScreenNode):
     def _turbo_label(self, text):
         self._label(self.ROOT + "/si_turbo_btn/button_label", text)
 
+    def _thr_label(self, text):
+        self._label(self.ROOT + "/si_thr_btn/button_label", text)
+
     def _speed_text(self, text):
         c = self._ctl("si_speed")
         if c is None:
@@ -355,12 +361,14 @@ class SiSettingScreen(ScreenNode):
         self._chunk_on = bool(data.get("chunk"))
         self._map_on = bool(data.get("map"))
         self._turbo_on = bool(data.get("turbo"))
+        self._thr_on = bool(data.get("threads"))
         self._split_label(u"分区模式：开" if self._split_on else u"分区模式：关")
         self._tick_label(u"防大型结构缺失：开" if self._tick_on
                          else u"防大型结构缺失：关")
         self._chunk_label(u"分块模式：开" if self._chunk_on else u"分块模式：关")
         self._map_label(u"地图画模式：开" if self._map_on else u"地图画模式：关")
         self._turbo_label(u"急速模式：开" if self._turbo_on else u"急速模式：关")
+        self._thr_label(u"并行加速：开" if self._thr_on else u"并行加速：关")
         speed = data.get("speed")
         if speed is not None:
             cur = self._speed_get().strip()
@@ -402,6 +410,12 @@ class SiSettingScreen(ScreenNode):
         self._turbo_label(u"急速模式：开" if self._turbo_on else u"急速模式：关")
         if self.sys is not None:
             self.sys.toggle_turbo(self._turbo_on)
+
+    def _on_thr(self, args):
+        self._thr_on = not self._thr_on
+        self._thr_label(u"并行加速：开" if self._thr_on else u"并行加速：关")
+        if self.sys is not None:
+            self.sys.toggle_threads(self._thr_on)
 
     def _on_speed(self, args):
         text = self._speed_get().strip()

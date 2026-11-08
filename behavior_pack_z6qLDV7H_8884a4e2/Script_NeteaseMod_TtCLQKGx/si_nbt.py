@@ -337,9 +337,24 @@ def _collect_entities(root_t, size, names, layer0):
     return out
 
 
+def read_decompress(path):
+    """只读文件 + 解压，不做解析（zlib/gzip 在 C 层会释放 GIL，适合丢后台线程）"""
+    f = open(path, "rb")
+    try:
+        raw = f.read()
+    finally:
+        f.close()
+    return _decompress(raw)
+
+
 def load_bytes(data, name=None, skip_air=True, skip_void=True):
     """从内存字节加载结构（内置库/审核合规路径）"""
-    root_t = parse_t(_decompress(data))
+    return load_prepared(_decompress(data), name, skip_air, skip_void)
+
+
+def load_prepared(dec, name=None, skip_air=True, skip_void=True):
+    """从「已解压的裸 NBT」构建结构（后台解析线程走这里）"""
+    root_t = parse_t(dec)
     root = plain(root_t)
 
     size = root.get("size")
