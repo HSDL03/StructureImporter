@@ -1,0 +1,61 @@
+{
+    "format_version": "0.0.1",
+    "name": "structureim",
+    "description": "结构导入器：导入并放置本地 .mcstructure 结构（功能参数支持 Tab 补全）",
+    "permission_level": "game_directors",
+    "args": [
+        {
+            "name": "功能",
+            "type": "enum",
+            "default": "ui",
+            "options": [
+                "ui",
+                "dir",
+                "scan",
+                "list",
+                "place",
+                "stop",
+                "pause",
+                "info",
+                "selftest",
+                "test",
+                "split",
+                "manual",
+                "help2"
+            ]
+        },
+        {
+            "name": "路径或名字",
+            "type": "str",
+            "default": "1"
+        },
+        {
+            "name": "附加参数",
+            "type": "str",
+            "default": "0"
+        }
+    ],
+    "args1": [
+        {
+            "name": "功能",
+            "type": "enum",
+            "default": "znum",
+            "options": [
+                "zwait",
+                "znum",
+                "zsec",
+                "bigwait"
+            ]
+        },
+        {
+            "name": "数值",
+            "type": "int",
+            "default": 0
+        },
+        {
+            "name": "数值2",
+            "type": "int",
+            "default": 0
+        }
+    ]
+}

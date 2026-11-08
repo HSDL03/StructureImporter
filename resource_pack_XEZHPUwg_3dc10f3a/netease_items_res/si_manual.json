@@ -1,0 +1,14 @@
+{
+  "format_version": "1.10",
+  "minecraft:item": {
+    "description": {
+      "identifier": "si:manual",
+      "category": "items"
+    },
+    "components": {
+      "minecraft:icon": "si_manual",
+      "minecraft:foil": true,
+      "minecraft:hover_text_color": "yellow"
+    }
+  }
+}

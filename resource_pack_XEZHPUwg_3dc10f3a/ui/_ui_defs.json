@@ -1,0 +1,7 @@
+{
+    "ui_defs": [
+        "ui/structure_im.json",
+        "ui/structure_im_setting.json",
+        "ui/netease_editor_template_namespace.json"
+    ]
+}

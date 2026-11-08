@@ -1,0 +1,14 @@
+{
+    "parent": "cmds",
+    "title": "命令速查",
+    "pages": [
+        {
+            "type": "textPage",
+            "content": "§e基础命令\n§f/structureim §f—— 帮助列表\n§f/structureim ui §f—— 图形界面\n§f/structureim dir <路径> §f—— 设置目录\n§f/structureim scan §f—— 重新扫描\n§f/structureim list [页] §f—— 结构列表\n\n§e导入控制\n§f/structureim place <序号|名字> [旋转]\n§f/structureim pause §f—— 暂停/继续\n§f/structureim stop §f—— 中止\n§f/structureim info §f—— 进度状态"
+        },
+        {
+            "type": "textPage",
+            "content": "§e巡图参数（地图画）\n§f/structureim znum <1-9>\n§f每幅地图巡几个分区，默认 3\n§f（实测 3 区即画满；缺角就调大）\n\n§f/structureim zwait <1-30>\n§f每区停留秒数，默认 3\n§f设置存档保存，重启不丢\n\n§e其它\n§f/structureim split <开|关>\n§f/structureim selftest\n§f/structureim manual §f—— 聊天框版教程"
+        }
+    ]
+}

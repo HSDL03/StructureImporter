@@ -1,0 +1,22 @@
+{
+    "parent": "start",
+    "title": "三步导入",
+    "pages": [
+        {
+            "type": "textPage",
+            "content": "§e第一步：设置结构目录\n§f/structureim dir <路径>\n§f例：/structureim dir D://我的结构/n§f路径用反斜杠，指向存 .mcstructure 的文件夹\n\n§e第二步：扫描\n§f/structureim scan\n§f或 /structureim list 翻页看列表\n§f也可以 /structureim ui 打开图形界面"
+        },
+        {
+            "type": "textPage",
+            "content": "§e第三步：放置\n§f/structureim place <序号或名字> [旋转0-3]\n§f例：/structureim place 1\n§f例：/structureim place 城堡 2\n\n§f· 你站的位置 = 结构的原点（脚下方块）\n§f· 旋转 0-3 = 水平转 90°/180°/270°\n§f· 大结构自动分区，玩家自动跟随传送，\n  不用任何操作，挂机等它导完即可"
+        },
+        {
+            "type": "textPage",
+            "content": "§e导入过程中的控制\n§f/structureim pause\n§f暂停/继续当前导入\n\n§f/structureim stop\n§f直接中止\n\n§f/structureim info\n§f看进度、速度、已完成分区数"
+        },
+        {
+            "type": "textPage",
+            "content": "§e开关与模式\n§f/structureim split <开|关>\n§f分区导入（大结构必备，默认开）\n\n§f急速模式（UI 界面里切换）：\n§f不等区块强写，写失败自动重试，\n速度换轻微卡顿风险\n\n§f/structureim selftest\n§f环境自检，出问题先跑这个"
+        }
+    ]
+}

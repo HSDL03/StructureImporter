@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.mcs/
+work.mcscfg
+studio.json
+editor.name
+generated-images/

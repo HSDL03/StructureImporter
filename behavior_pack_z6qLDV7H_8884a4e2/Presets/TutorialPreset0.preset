@@ -1,0 +1,31 @@
+{
+    "boxDataList": [],
+    "childParts": [
+        {
+            "changes": {},
+            "classType": "PartInstance",
+            "clientPartType": null,
+            "customVariables": [],
+            "directoryPath": "Tutorial",
+            "editorType": null,
+            "metaType": "TutorialPartMeta",
+            "objId": "501cdbbcc12c4a13b420451e856a95d8",
+            "partId": "Tutorial",
+            "partType": "TutorialPart"
+        }
+    ],
+    "childPresets": [],
+    "classType": "PresetBase",
+    "dimension": 0,
+    "forceLoad": false,
+    "name": "TutorialPreset0",
+    "notifyRemove": true,
+    "objId": "28c6f22ab1b642afaeff906d32bbc0b5",
+    "preLoad": true,
+    "presetId": "6b0c7d35-e383-447d-8d07-5df3b3adb8ac",
+    "presetType": "空预设",
+    "previewEnable": true,
+    "singleton": false,
+    "unique": false,
+    "updateTransformInterval": 2
+}

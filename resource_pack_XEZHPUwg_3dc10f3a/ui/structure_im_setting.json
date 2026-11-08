@@ -1,0 +1,704 @@
+{
+    "main": {
+        "type": "screen",
+        "is_showing_menu": true,
+        "controls": [
+            {
+                "si_set_root@structure_im_set.si_set_root": {}
+            }
+        ]
+    },
+    "namespace": "structure_im_set",
+    "si_chunk_btn": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "分块模式：关",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -140.0,
+            -32.0
+        ],
+        "size": [
+            "170px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_chunk_desc": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            20.0,
+            -32.0
+        ],
+        "size": [
+            "220px",
+            "24px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "大结构切成 <50KB 小块依次导入，防卡顿",
+        "text_alignment": "left"
+    },
+    "si_hint": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            0,
+            118.0
+        ],
+        "size": [
+            "396px",
+            "14px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "分区模式与防缺失设置会自动保存在存档里",
+        "text_alignment": "center"
+    },
+    "si_map_btn": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "地图画模式：关",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -140.0,
+            2.0
+        ],
+        "size": [
+            "170px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_map_desc": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            20.0,
+            2.0
+        ],
+        "size": [
+            "220px",
+            "24px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "对齐地图边缘导入，导完自动发编号地图",
+        "text_alignment": "left"
+    },
+    "si_set_close": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.68,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "✕",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            188,
+            -107.0
+        ],
+        "size": [
+            "20px",
+            "20px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_close": {}
+            },
+            {
+                "hover@structure_im.si_spr_close_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_close_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_set_root": {
+        "type": "panel",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            0,
+            0
+        ],
+        "size": [
+            "100%",
+            "100%"
+        ],
+        "layer": 0,
+        "clips_children": false,
+        "controls": [
+            {
+                "set_solid@structure_im_set.set_solid": {}
+            },
+            {
+                "set_bg@structure_im_set.set_bg": {}
+            },
+            {
+                "si_accent@structure_im.si_accent": {}
+            },
+            {
+                "si_set_title@structure_im_set.si_set_title": {}
+            },
+            {
+                "si_set_close@structure_im_set.si_set_close": {}
+            },
+            {
+                "si_split_btn@structure_im_set.si_split_btn": {}
+            },
+            {
+                "si_split_desc@structure_im_set.si_split_desc": {}
+            },
+            {
+                "si_tick_btn@structure_im_set.si_tick_btn": {}
+            },
+            {
+                "si_tick_desc@structure_im_set.si_tick_desc": {}
+            },
+            {
+                "si_tick_desc2@structure_im_set.si_tick_desc2": {}
+            },
+            {
+                "si_chunk_btn@structure_im_set.si_chunk_btn": {}
+            },
+            {
+                "si_chunk_desc@structure_im_set.si_chunk_desc": {}
+            },
+            {
+                "si_map_btn@structure_im_set.si_map_btn": {}
+            },
+            {
+                "si_map_desc@structure_im_set.si_map_desc": {}
+            },
+            {
+                "si_turbo_btn@structure_im_set.si_turbo_btn": {}
+            },
+            {
+                "si_turbo_desc@structure_im_set.si_turbo_desc": {}
+            },
+            {
+                "si_speed_label@structure_im_set.si_speed_label": {}
+            },
+            {
+                "si_speed@structure_im_set.si_speed_tpl": {}
+            },
+            {
+                "si_speed_apply@structure_im_set.si_speed_apply": {}
+            },
+            {
+                "si_hint@structure_im_set.si_hint": {}
+            }
+        ]
+    },
+    "si_set_title": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            0,
+            -107.0
+        ],
+        "size": [
+            "396px",
+            "16px"
+        ],
+        "layer": 3,
+        "color": [
+            0.95,
+            0.95,
+            0.96
+        ],
+        "font_scale_factor": 0.95,
+        "font_size": "large",
+        "shadow": true,
+        "text": "设置",
+        "text_alignment": "center"
+    },
+    "si_speed_apply": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "应用",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            60.0,
+            78.0
+        ],
+        "size": [
+            "80px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_speed_label": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -160.0,
+            78.0
+        ],
+        "size": [
+            "150px",
+            "16px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "每区间隔（1~10 秒）",
+        "text_alignment": "left"
+    },
+    "si_speed_tpl@common.text_edit_box": {
+        "type": "edit_box",
+        "$font_scale_factor": 0.75,
+        "$font_size": "normal",
+        "$place_holder_text": "3",
+        "$place_holder_text_color": [
+            0.55,
+            0.58,
+            0.62
+        ],
+        "$text_background_default": "structure_im.si_field_bg",
+        "$text_background_hover": "structure_im.si_field_bg_hover",
+        "$text_box_name": "%netease_editor_template_namespace.message",
+        "$text_box_text_color": [
+            1,
+            1,
+            1
+        ],
+        "$text_edit_box_content_binding_name": "#netease_editor_template_namespace.message_content",
+        "$text_edit_box_label_anchor_point": "left_middle",
+        "$text_edit_box_label_min_size": [
+            "100%",
+            0
+        ],
+        "$text_edit_box_label_size": [
+            "default",
+            "default"
+        ],
+        "$text_padding": [
+            4,
+            0,
+            4,
+            0
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -30.0,
+            78.0
+        ],
+        "size": [
+            "80px",
+            "22px"
+        ],
+        "layer": 4,
+        "propagate_alpha": true,
+        "enabled": true,
+        "always_listening": true,
+        "focus_enabled": true,
+        "max_length": 3
+    },
+    "si_split_btn": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "分区模式：关",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -140.0,
+            -100.0
+        ],
+        "size": [
+            "170px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_split_desc": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            20.0,
+            -100.0
+        ],
+        "size": [
+            "220px",
+            "24px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "自动按 16×16 格分区依次导入",
+        "text_alignment": "left"
+    },
+    "si_tick_btn": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "防大型结构缺失：关",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -140.0,
+            -66.0
+        ],
+        "size": [
+            "170px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_tick_desc": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            20.0,
+            -66.0
+        ],
+        "size": [
+            "220px",
+            "24px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "请确保存档至少有一个常加载空位（开启后导入将会变慢）\n开启后会自动打开分区模式，并为每个分区临时添加常加载区块",
+        "text_alignment": "center"
+    },
+    "si_tick_desc2": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -90,
+            -46.0
+        ],
+        "size": [
+            "400px",
+            "14px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "完成后常加载区块会自动移除",
+        "text_alignment": "center"
+    },
+    "si_turbo_btn": {
+        "type": "button",
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.64,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "急速模式：关",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            -140.0,
+            36.0
+        ],
+        "size": [
+            "170px",
+            "24px"
+        ],
+        "layer": 2,
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ]
+    },
+    "si_turbo_desc": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            20.0,
+            36.0
+        ],
+        "size": [
+            "220px",
+            "24px"
+        ],
+        "layer": 3,
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_scale_factor": 0.64,
+        "font_size": "normal",
+        "shadow": true,
+        "text": "分区等待降到 1 tick，最快但有卡顿风险",
+        "text_alignment": "left"
+    },
+    "set_solid": {
+        "type": "image",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "100%",
+            "100%"
+        ],
+        "offset": [
+            0,
+            0
+        ],
+        "texture": "textures/ui/si_solid",
+        "alpha": 1.0,
+        "layer": 0
+    },
+    "set_bg": {
+        "type": "image",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "460px",
+            "300px"
+        ],
+        "offset": [
+            0,
+            0
+        ],
+        "texture": "textures/ui/si_panel",
+        "nineslice_size": 20,
+        "alpha": 1.0,
+        "layer": 1
+    }
+}

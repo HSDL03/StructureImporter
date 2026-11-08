@@ -1,0 +1,10 @@
+{
+    "item": "si:manual",
+    "title1": "结构导入器",
+    "title2": "使用说明书 · 右键打开",
+    "content": "§6欢迎使用结构导入器！\n\n§f把本地 .mcstructure 结构原样搬进世界，\n大结构自动分区+跟随传送，\n还能自动生成地图画贴上墙。\n\n§e翻到下一页看目录 →",
+    "contentTextSize": 9,
+    "pageConfig": {
+        "contentTextSize": 9
+    }
+}
