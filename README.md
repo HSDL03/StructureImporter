@@ -1,8 +1,8 @@
 <p align="center">
 	<img
-		src="world_icon.jpeg"
+		src="https://zh.minecraft.wiki/images/Structure_Block_JE2_BE1.png"
 		width="120px"
-		align="center" alt="结构导入器 Logo"
+		align="center" alt="结构方块"
 	/>
 	<h1 align="center">结构导入器 Structure Importer</h1>
 	<p align="center">
