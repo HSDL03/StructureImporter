@@ -1886,6 +1886,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def _prepare_section(self, job):
         """进入分区前的准备：跟随 TP + 防缺失时挂常加载区块"""
+        # 先取本区：下面的等待逻辑要看它是否已被预取（提前赋值，别留局部变量坑）
+        sec = self._section(job)
         tpd = self._tp_to_section(job)
         if tpd:
             job.tp_wait = 1
@@ -1923,10 +1925,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                     u"§f急速§7" if self.turbo else u"", wait / 20.0))
             return
         # 本区开始写入前，先把接下来的相邻分区区块挂上（异步加载与写入重叠）
-        self._prefetch(job)
+        try:
+            self._prefetch(job)
+        except Exception:
+            util.log_exc("prefetch")
         if not job.tick_enabled:
             return
-        sec = self._section(job)
         if sec is None or not sec["blocks"]:
             return
         bx, by, bz = job.base
