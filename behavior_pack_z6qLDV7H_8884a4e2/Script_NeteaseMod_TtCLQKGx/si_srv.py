@@ -303,6 +303,11 @@ class Job(object):
         self.seal_cursor = 0
         self.seal_until = 0       # 守护到第几 tick（0 = 不守）
         self.seal_pass = 0
+        self.seal_fixes = 0       # 守护阶段实际补写了多少格（用来判断"水是不是真在流"）
+        self.wash_idx = []        # 怕水的方块（火把/铁轨/告示牌/花…），液体后核对一遍
+        self.wash_cursor = 0
+        self.wash_fixed = 0
+        self.liq_cache = {}       # (name, aux, states) -> 方块字典：几万格水只留几份
         self.freeze = True        # 本次任务是否冻结时间流逝
         self.liq_armed = False    # 放液体前是否已经把人送回结构中心
         self.note = u""           # 临时状态（原分区提示），只显示在 tip 上，不进聊天框
@@ -501,10 +506,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             n = len(job.liquid_idx)
             text = u"§b▶ 结构导入 §f%d%% §7· §9放液体 §f%d/%d §7· %s" % (
                 pct, job.liq_cursor, n, speed)
+        elif job.phase == "wash":
+            text = u"§6▶ 结构导入 §f补被水冲掉的方块 §7%d/%d §7· 已补 %d" % (
+                job.wash_cursor, len(job.wash_idx), job.wash_fixed)
         elif job.phase == "seal":
             left = max(0, job.seal_until - job.tick) / 20.0
-            text = u"§3■ 结构导入 §f冻结中 §7· §9锁水 %d 格 §7· 剩 %.0fs" % (
-                len(job.sealed), left)
+            text = u"§3■ 结构导入 §f静默守护 §7· 巡检 %d 格 §7· 补 %d §7· 剩 %.0fs" % (
+                len(job.sealed), job.seal_fixes, left)
         else:
             phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
                      u"ents": u"§d方块实体", u"items": u"§d容器物品",
@@ -1245,16 +1253,23 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                        int(math.ceil((max(b[2] for b in blocks) - min(b[2] for b in blocks) + 1) / float(ms)))))
 
         # 红石相关方块最后再触发一次邻居更新，否则刚放下去时容易被判成"失去支撑"
+        # 注意：门/铁轨/告示牌这类多格或靠支撑的方块一律不进唤醒批次——
+        # 带邻居更新重写它们，等于当场告诉引擎"重新检查支撑"，写一半就掉了。
         wake = []
+        wash = []
         for i in range(len(blocks)):
             low = blocks[i][3].lower()
-            for kw in cfg.REDSTONE_HINTS:
-                if kw in low:
-                    wake.append(i)
-                    break
+            if not any(kw in low for kw in cfg.WAKE_SKIP):
+                for kw in cfg.REDSTONE_HINTS:
+                    if kw in low:
+                        wake.append(i)
+                        break
+            if any(kw in low for kw in cfg.WASH_HINTS):
+                wash.append(i)
 
         sections = self._build_sections(blocks, wake, ents, use_chunk)
         self.job = Job(pid, entry.rel, blocks, base, dim, ents, wake, sections, mobs)
+        self.job.wash_idx = wash
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
         self.job.speed_ticks = int(self.tick_speed) * 20
@@ -1977,6 +1992,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._step_mobs(job)
         elif job.phase == "liquid":
             self._step_liquid(job, comp)
+        elif job.phase == "wash":
+            self._step_wash(job, comp)
         elif job.phase == "seal":
             self._step_seal(job, comp)
         else:
@@ -2015,7 +2032,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             return False
         if states:
-            # 老版本引擎不认 block 里的 states 时，这一次补写就是唯一生效路径
+            # 老版本引擎不认 block 里的 states 时，这一次补写就是唯一生效路径。
+            # （高频重试的场景要传 states=None，方块字典里已经带状态了，
+            #   再补一次等于多排一个方块刻，几万格水连补几秒会把引擎顶爆）
             try:
                 self._states().SetBlockStates(pos, states, dim)
             except Exception:
@@ -2347,6 +2366,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     job.wait_until = job.tick + (6 if self.turbo else 30)
                     job.note = u"§9准备放液体（%d 格）" % len(job.liquid_idx)
             return
+        if job.wash_idx and job.wash_cursor < len(job.wash_idx):
+            # 水放完后先补被冲掉的方块（火把/铁轨/告示牌/花…），再做守水巡检。
+            # 顺序很重要：先让世界恢复成"结构本来的样子"，再去按住水。
+            job.phase = "wash"
+            return
         if job.freeze and job.sealed:
             if not job.seal_until:
                 job.seal_until = job.tick + int(max(0.0, self.freeze_secs) * 20)
@@ -2469,28 +2493,84 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             n += 1
             x, y, z, name, aux, states = blocks[i]
             pos = (bx + x, by + y, bz + z)
-            blk = {"name": name, "aux": int(aux)}
-            if states:
-                blk["states"] = states
+            # 同一调色板项共用一个方块字典：五万格水也就几份，不占内存也不拖 GC
+            key = (name, aux, id(states))
+            blk = job.liq_cache.get(key)
+            if blk is None:
+                blk = {"name": name, "aux": int(aux)}
+                if states:
+                    blk["states"] = states
+                job.liq_cache[key] = blk
+            tries = 0
             try:
                 if self._place_block(comp, pos, blk, states, dim, False):
                     job.liq_ok += 1
                 else:
                     job.liq_fail += 1
+                    tries = 1            # 没写进去，记一次，守水阶段只再试有限次
             except Exception:
                 job.liq_fail += 1
-            sealed.append((pos, blk))
+                tries = 1
+            # [坐标, 方块字典, 已补写次数]：守水阶段只"核对并纠正"，不再无脑重写
+            sealed.append([pos, blk, tries])
             if n % 8 == 0 and (time.time() - t0) * 1000.0 >= budget:
                 break
         if job.liq_cursor >= total:
             self._final_phase(job)
 
-    def _step_seal(self, job, comp):
-        """守护液体：按环形游标把放过的水原位重写一遍
+    def _step_wash(self, job, comp):
+        """补回被水冲掉的方块
 
-        引擎放下方块后仍会按"有没有支撑"重新算液体，池子边缘就开始往旁边渗。
-        守护窗口内反复重写，等于把这几秒的时间里每一格水都按住不动；
-        每 tick 只花 FREEZE_BUDGET_MS，液体再多也不会卡。
+        水一放下去，靠支撑站着的方块（火把、拉杆、铁轨、告示牌、花、红石线…）
+        会当场变成掉落物——这不是 bug，是水本身的规则。
+        这里按原结构挨个核对一遍，位置不对就补回去：每格只补一次、不触发邻居更新
+        （正是邻居更新把它们弄掉的），总数超过 WASH_MAX_FIX 就收手。
+        """
+        idx = job.wash_idx
+        total = len(idx)
+        bx, by, bz = job.base
+        dim = job.dim
+        budget = self._write_budget()
+        t0 = time.time()
+        n = 0
+        while job.wash_cursor < total:
+            i = idx[job.wash_cursor]
+            job.wash_cursor += 1
+            n += 1
+            x, y, z, name, aux, states = job.blocks[i]
+            pos = (bx + x, by + y, bz + z)
+            try:
+                cur = comp.GetBlockNew(pos, dim)
+            except Exception:
+                cur = None
+            if cur and cur.get("name") == name:
+                pass                             # 还在，什么都别做
+            elif job.wash_fixed < cfg.WASH_MAX_FIX:
+                blk = {"name": name, "aux": int(aux)}
+                if states:
+                    blk["states"] = states
+                try:
+                    # states 传 None：字典里已经带了，避免再排一次状态写入
+                    if self._place_block(comp, pos, blk, None, dim, False):
+                        job.wash_fixed += 1
+                except Exception:
+                    pass
+            if n % 16 == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        if job.wash_cursor >= total:
+            self._final_phase(job)
+
+    def _step_seal(self, job, comp):
+        """守水：巡检 + 只改不对的（绝不再无脑重写）
+
+        老写法是每个 tick 把所有水原位重写一遍。写一次水就多排一个引擎方块刻，
+        几万格水连写几秒 = 引擎的液体更新队列被顶爆，世界直接卡死崩掉（真机踩坑），
+        而且重写本身还会把附近的门/火把/铁轨顶掉。
+        现在改成先读后写：
+          · 位置上的方块名和 aux 都对 -> 什么都不做（绝大多数情况）
+          · 真的被引擎改了 -> 只补这一格，同一格最多补 FREEZE_MAX_FIX 次
+          · 累计补写超过 FREEZE_FIX_CAP -> 说明水是真的在流，继续写只会更卡，直接收手
+        每 tick 还有巡检格数上限，几万格水也只是"读"，不产生任何方块更新。
         """
         items = job.sealed
         n = len(items)
@@ -2498,21 +2578,42 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.phase = "done"
             return
         budget = cfg.FREEZE_BUDGET_MS
+        checks = cfg.FREEZE_CHECKS
         t0 = time.time()
         done = 0
-        while done < n:                      # 最多转一圈，避免液体很少时空转
+        fixed = 0
+        while done < n and done < checks:
             i = job.seal_cursor % n
-            pos, blk = items[i]
+            ent = items[i]
             job.seal_cursor = (i + 1) % n
             done += 1
+            if ent[2] >= cfg.FREEZE_MAX_FIX:
+                continue
+            pos = ent[0]
+            blk = ent[1]
             try:
-                self._place_block(comp, pos, blk, blk.get("states"), job.dim, False)
+                cur = comp.GetBlockNew(pos, job.dim)
+            except Exception:
+                cur = None
+            if cur and cur.get("name") == blk["name"]:
+                # 只比方块名，不比 aux：引擎会把水的 liquid_depth 规范化成自己的值，
+                # 拿算出来的 aux 去比对会一直判"不对"，然后又变成无脑重写。
+                continue                       # 还是那格水，别碰它
+            ent[2] += 1
+            fixed += 1
+            try:
+                self._place_block(comp, pos, blk, None, job.dim, False)
             except Exception:
                 pass
-            if done % 16 == 0 and (time.time() - t0) * 1000.0 >= budget:
+            if fixed % 8 == 0 and (time.time() - t0) * 1000.0 >= budget:
                 break
+        job.seal_fixes += fixed
         job.seal_pass += 1
         if job.tick >= job.seal_until:
+            job.phase = "done"
+        elif job.seal_fixes > cfg.FREEZE_FIX_CAP:
+            # 水已经在真流了：再写下去只会把引擎拖死，立刻收手
+            job.note = u"§e水在流动，提前结束守护"
             job.phase = "done"
 
     def _sec_box(self, job, sec):
@@ -2858,6 +2959,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 msg += u" §7· 液体 §f%d" % job.liq_ok
                 if job.liq_fail:
                     msg += u"§7(失败 %d)" % job.liq_fail
+            if job.wash_fixed:
+                msg += u" §7· 补回被水冲掉 §f%d" % job.wash_fixed
+            if job.seal_fixes:
+                msg += u" §7· 守水补写 §f%d" % job.seal_fixes
             self.tell(job.pid, msg)
             if job.sealed and not job.freeze:
                 self.tell(job.pid, u"§7冻结已关（§f/structureim freeze on§7 可让水不再乱跑）")

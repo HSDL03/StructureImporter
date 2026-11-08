@@ -127,9 +127,29 @@ CHUNK_MAX_BYTES = 50 * 1024   # 每个分块的数据量上限（50KB）
 REDSTONE_HINTS = (
     "torch", "repeater", "comparator", "wire", "piston", "observer", "lever",
     "button", "pressure_plate", "redstone", "lamp", "tripwire", "dispenser",
-    "dropper", "hopper", "door", "gate", "copper_bulb", "target", "rail",
+    "dropper", "hopper", "copper_bulb", "target",
     "note_block", "daylight_detector", "sculk_sensor", "crafter",
 )
+# 这些方块绝对不能进"红石唤醒"批次：它们是**多格结构/需要支撑**的方块，
+# 带邻居更新重写一次就会当场判定失去支撑然后掉落（门只剩半扇、铁轨弹飞）。
+# 真机踩坑：门在自己的位置被重写后，另一半还没写上去 -> 整扇门变成掉落物。
+WAKE_SKIP = ("door", "gate", "rail", "bed", "tall_grass", "tallgrass",
+             "sunflower", "lilac", "rose_bush", "peony", "vine", "ladder",
+             "sign", "banner", "carpet", "snow_layer", "candle", "chain")
+
+# 液体冲刷校正：水放下去会冲掉一批"靠支撑站着"的方块（火把、拉杆、按钮、
+# 铁轨、告示牌、花、红石线…）。液体阶段结束后按原结构挨个核对一遍，
+# 少了就补回去（每个位置只补一次，且不触发邻居更新）。
+WASH_HINTS = (
+    "torch", "lantern", "lever", "button", "rail", "sign", "banner", "ladder",
+    "vine", "flower", "tulip", "paeonia", "allium", "cornflower", "dandelion",
+    "poppy", "blue_orchid", "azure_bluet", "oxeye", "lily", "rose", "sunflower",
+    "lilac", "peony", "sapling", "wheat", "carrot", "potato", "beetroot",
+    "sugar_cane", "bamboo", "kelp", "seagrass", "coral", "tripwire", "wire",
+    "repeater", "comparator", "string", "carpet", "snow_layer", "banner",
+    "candle", "chain", "pot", "skull", "head", "frame", "painting",
+)
+WASH_MAX_FIX = 800        # 一次导入最多补多少个被水冲掉的方块（防止无限补）
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
 
@@ -164,7 +184,10 @@ WATERLOG_KEYS = ("waterlogged",)
 FREEZE_DEFAULT = True     # 默认开启
 FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
 FREEZE_SECS_MAX = 60.0
-FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒回写
+FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒
+FREEZE_CHECKS = 600       # 守液体时每 tick 最多巡检多少格（读比写便宜，先读后写）
+FREEZE_MAX_FIX = 3        # 同一格最多补写几次（补不进去说明它本来就该流走）
+FREEZE_FIX_CAP = 4000     # 累计补写超过这个数就提前收手（说明水在真流，越写越卡）回写
 
 # ---------------------------------------------------------------- 物品 NBT 安全阈值
 # 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，
