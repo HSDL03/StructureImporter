@@ -171,5 +171,5 @@ A: 请在 [Issues](https://github.com/HSDL03/StructureImporter/issues) 页面提
 ---
 
 <p align="center">
-	<sub>由 <a href="https://github.com/HSDL03">HSDL03</a> × AI (WorkBuddy) 协作开发 · 用 ❤️ 和无数轮真机调试铸成</sub>
+	<sub>由 <a href="https://github.com/HSDL03">HSDL03</a> × AI (WorkBuddy) 协作开发</sub>
 </p>
