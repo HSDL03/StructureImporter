@@ -1638,15 +1638,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             cell["ta"] = name
         return ok
 
-    def _map_to_inv(self, pid, item):
-        """把一张地图塞进玩家背包（墙没搭成时的兜底）
+    @staticmethod
+    def _inv_item(item, default=None):
+        """把 GetPlayerAllItems 的物品字典转成"能塞回背包"的字典
 
         坑：GetPlayerAllItems 给的是 newItemName/newAuxValue 风格，
-        SpawnItemToPlayerInv 要的是 itemName/count/auxValue 风格；
-        直接原样塞会报 "spawn item dict to inv failed"（实测）。
+        SetPlayerAllItems / SpawnItemToPlayerInv 要的是 itemName/count/auxValue。
+        两套键名混用引擎只会丢一行 WARNING（spawn item dict to inv failed!），
+        物品当场消失，代码还毫不知情 —— 所以统一从这里过一道。
         """
-        d = dict(item or {})
-        name = d.get("itemName") or d.get("newItemName") or u"minecraft:filled_map"
+        d = item if isinstance(item, dict) else {}
+        name = d.get("itemName") or d.get("newItemName") or default
+        if not name:
+            return None
         try:
             cnt = int(d.get("count") or 1)
         except (TypeError, ValueError):
@@ -1655,10 +1659,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             aux = int(d.get("auxValue", d.get("newAuxValue", 0)) or 0)
         except (TypeError, ValueError):
             aux = 0
-        payload = {"itemName": name, "count": max(1, cnt), "auxValue": aux}
+        out = {"itemName": name, "count": max(1, cnt), "auxValue": aux}
         ud = d.get("userData")
         if isinstance(ud, dict) and ud:
-            payload["userData"] = ud
+            out["userData"] = ud
+        return out
+
+    def _map_to_inv(self, pid, item):
+        """把一张地图塞进玩家背包（墙没搭成时的兜底）"""
+        payload = self._inv_item(item, u"minecraft:filled_map")
+        if payload is None:
+            payload = {"itemName": "minecraft:filled_map", "count": 1, "auxValue": 0}
         try:
             it = self.factory.CreateItem(pid)
             if it.SpawnItemToPlayerInv(payload, pid):
@@ -1799,7 +1810,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                         sel = int(slot or 0)
                     items = it.GetPlayerAllItems(0, True) or []
                     q["restore"] = dict(items[sel]) if sel < len(items) and items[sel] else {}
-                    it.SetPlayerAllItems({(0, sel): mapd})
+                    # 地图字典也是 newItemName 风格，得先转一手才塞得回去
+                    it.SetPlayerAllItems({(0, sel): self._inv_item(mapd, u"minecraft:filled_map")})
                     q["map_uuid"] = mu
                     q["hold_slot"] = sel
                     q["stage"] = "patrol"
@@ -1897,7 +1909,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 items = it.GetPlayerAllItems(0, True) or []
                 if sel is not None and sel < len(items):
                     held = items[sel]          # 主手里的地图（引擎渲染后的最新状态）
-                    it.SetPlayerAllItems({(0, sel): q.get("restore") or {}})
+                    back = self._inv_item(q.get("restore")) or \
+                        {"itemName": "minecraft:air", "count": 0, "auxValue": 0}
+                    it.SetPlayerAllItems({(0, sel): back})
             except Exception:
                 util.log_exc("restore hand")
             if held is not None:
@@ -2224,16 +2238,25 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         return (bx, by, bz), dim
 
     def _manual_fix_tick(self):
-        # lang 方案失效时兜底：直接把名字写进物品 userData
+        """lang 方案失效时兜底：直接把名字写进物品 userData
+
+        只在"确实发现没名字的说明书"时才动背包，而且失败 3 次就永久收手：
+        以前是无条件每 2 秒 SetPlayerAllItems 一次，字典键名还是错的，
+        引擎就一直刷 "spawn item dict to inv failed"，日志几秒一条刷到崩。
+        """
         self._mfix_cd = getattr(self, "_mfix_cd", 0) - 1
         if self._mfix_cd > 0:
             return
         self._mfix_cd = 40
+        if getattr(self, "_mfix_fail", 0) >= 3:
+            return
         try:
             players = serverApi.GetPlayerList()
         except Exception:
             return
         for pid in players or []:
+            if pid in getattr(self, "_mfix_done", ()):
+                continue
             try:
                 it = self.factory.CreateItem(pid)
                 items = it.GetPlayerAllItems(0, True) or []
@@ -2244,14 +2267,23 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     ud = x.get("userData") or {}
                     if ud.get("display") and ud["display"].get("Name"):
                         continue
-                    nx = dict(x)
-                    nx["userData"] = dict(ud)
-                    nx["userData"]["display"] = {"Name": u"§e结构导入说明书§r\n§f右键查看教程"}
+                    nx = self._inv_item(x, u"si:manual")
+                    if nx is None:
+                        continue
+                    d = dict(nx.get("userData") or {})
+                    d["display"] = {"Name": u"§e结构导入说明书§r\n§f右键查看教程"}
+                    nx["userData"] = d
                     changed[(0, i)] = nx
-                if changed:
-                    it.SetPlayerAllItems(changed)
+                if not changed:
+                    continue
+                if it.SetPlayerAllItems(changed):
+                    if not hasattr(self, "_mfix_done"):
+                        self._mfix_done = set()
+                    self._mfix_done.add(pid)
+                else:
+                    self._mfix_fail = getattr(self, "_mfix_fail", 0) + 1
             except Exception:
-                pass
+                self._mfix_fail = getattr(self, "_mfix_fail", 0) + 1
 
     def on_tick(self, args=None):
         self._manual_fix_tick()
