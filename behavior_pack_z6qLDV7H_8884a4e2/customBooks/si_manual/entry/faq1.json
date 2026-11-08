@@ -8,7 +8,7 @@
         },
         {
             "type": "textPage",
-            "content": "§e聊天框提示不显示\n§f旧版本已知问题，更新后即好。\n\n§e循环命令方块不跑（tellraw 没输出）\n§f部分版本导入后循环方块不自动执行；\n§fmod 会代理展示类命令\n§f(tellraw/title/say/me)§f每 2 秒执行一次，\n§f其余命令留在方块里走红石触发。\n\n§e命令 /structureim znum 没反应\n§f确认已重启世界加载新版本。"
+            "content": "§e聊天框提示不显示\n§f旧版本已知问题，更新后即好。\n\n§e循环命令方块不跑（tellraw 没输出）\n§f部分版本导入后循环方块不自动执行；\n§fmod 会代理展示类命令\n§f(tellraw/title/say/me)§f每 2 秒执行一次，\n§f其余命令留在方块里走红石触发。\n\n§e命令 /structureim znum 没反应\n§f确认已重启世界加载新版本。\n\n§e盒中盒 / 制裁盒子能导吗\n§f能。物品 NBT 默认原样保留，\n§f但写入会分摊到多个 tick（防卡）。\n§f真卡了用 nbtlimit <KB> 开启裁剪。"
         }
     ]
 }

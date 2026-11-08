@@ -47,7 +47,8 @@
                 "bigwait",
                 "budget",
                 "threads",
-                "parallel"
+                "parallel",
+                "nbtlimit"
             ]
         },
         {

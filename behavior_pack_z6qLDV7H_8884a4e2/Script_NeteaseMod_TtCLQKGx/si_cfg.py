@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "manual", "help2"]
+               "nbtlimit", "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -115,6 +115,13 @@ REDSTONE_HINTS = (
 )
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
+
+# ---------------------------------------------------------------- 物品 NBT 安全阈值
+# 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，
+# 超过阈值就只放物品本体（名称/数量/耐久），NBT 丢掉，并在结束时告诉玩家。
+ITEM_NBT_MAX_KB = 0         # 0 = 不裁剪（默认，完整保留盒中盒）；>0 才裁到该 KB 上限
+ITEM_NBT_MAX_DEPTH = 12     # NBT 嵌套深度上限（层）
+ITEM_NBT_SCAN_NODES = 8000  # 判断时的遍历节点上限（早停，避免判断本身卡住）
 
 # ---------------------------------------------------------------- 界面
 ROWS = 6                  # 每页显示几行

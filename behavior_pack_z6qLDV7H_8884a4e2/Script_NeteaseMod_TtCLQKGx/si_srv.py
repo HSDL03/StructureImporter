@@ -52,6 +52,86 @@ CMD_BLOCK_MODE = {
 }
 
 
+def _typed_to_plain(node):
+    """{'__type__','__value__'} 包装树 -> 普通 python 值（引擎 userData 格式）"""
+    if isinstance(node, dict):
+        if len(node) == 2 and "__type__" in node and "__value__" in node:
+            v = node["__value__"]
+            if isinstance(v, list):
+                return [_typed_to_plain(i) for i in v]
+            return v
+        return dict((k, _typed_to_plain(v)) for k, v in node.items())
+    if isinstance(node, list):
+        return [_typed_to_plain(v) for v in node]
+    return node
+
+
+def _nbt_leaf_size(v):
+    """估算一个叶子值的字节量"""
+    if isinstance(v, (bytes, bytearray)):
+        return len(v) + 8
+    try:
+        if isinstance(v, basestring if _PY2 else str):
+            return len(v) + 8
+    except Exception:
+        pass
+    if isinstance(v, (list, tuple)):
+        return 8 * len(v) + 8
+    return 8
+
+
+def _nbt_heavy(node, max_kb=None, max_depth=None):
+    """物品 NBT 是否过大/嵌套过深（早停，别为了判断把 2MB 的盒子整个走一遍）
+
+    「制裁盒子」这类结构是潜影盒套潜影盒，深度几十层、单件物品 2MB。
+    原样交给引擎要么物品丢失，要么直接把主线程顶死 —— 所以先量一下。
+    """
+    if max_kb is None:
+        max_kb = cfg.ITEM_NBT_MAX_KB
+    if max_depth is None:
+        max_depth = cfg.ITEM_NBT_MAX_DEPTH
+    if not max_kb or max_kb <= 0:
+        return False
+    limit = max_kb * 1024
+    budget = [cfg.ITEM_NBT_SCAN_NODES]
+    size = [0]
+    heavy = [False]
+
+    def walk(n, depth):
+        if heavy[0] or budget[0] <= 0:
+            return
+        budget[0] -= 1
+        if depth > max_depth:
+            heavy[0] = True
+            return
+        if isinstance(n, dict):
+            for k, v in n.items():
+                if k == "__type__":
+                    continue
+                if k == "__value__":
+                    size[0] += _nbt_leaf_size(v)
+                    if size[0] > limit:
+                        heavy[0] = True
+                        return
+                    continue
+                size[0] += len(k) + 4
+                walk(v, depth + 1)
+                if heavy[0]:
+                    return
+        elif isinstance(n, list):
+            size[0] += 4
+            for v in n:
+                walk(v, depth + 1)
+                if heavy[0]:
+                    return
+
+    try:
+        walk(node, 0)
+    except Exception:
+        return True
+    return heavy[0] or budget[0] <= 0
+
+
 def _item_dict(entry):
     """mcstructure 物品 NBT -> SpawnItemToContainer 认的物品字典"""
     node = _val(entry)
@@ -68,11 +148,19 @@ def _item_dict(entry):
         return None
     if count <= 0:
         return None
+    # 数量和堆叠上限对不上引擎会直接拒收，先夹住
+    if count > 64:
+        count = 64
     item = {"itemName": name, "count": count, "auxValue": aux}
     tag = _val(node.get("tag")) or _val(node.get("ItemTag"))
+    trim = False
     if isinstance(tag, dict) and tag:
-        item["userData"] = tag
-    return {"dict": item, "slot": slot}
+        if _nbt_heavy(tag):
+            # 盒中盒 / 超大 NBT：只放物品本体，NBT 丢掉（否则卡死或崩）
+            trim = True
+        else:
+            item["userData"] = tag
+    return {"dict": item, "slot": slot, "trim": trim}
 
 
 HELP = [
@@ -93,6 +181,7 @@ HELP = [
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
+    u"§f/structureim nbtlimit <0|8-1024> §7物品NBT上限KB，0=不裁剪（默认）",
     u"§f/structureim selftest §7环境自检",
     u"§f/structureim manual §7看分步教程（也可右键使用说明书物品）",
 ]
@@ -146,8 +235,11 @@ class Job(object):
         self.ent_ok = 0
         self.ent_fail = 0
         self.item_ok = 0
+        self.item_fail = 0
         self.ent_fixed = 0
         self.cmd_fixed = 0
+        self.item_trim = 0      # 因 NBT 过大/过深被裁掉数据的物品数
+        self.item_queue = []    # 待写入容器的物品 [(itemDict, slot, pos, plainDict)]
         self.wake_cursor = 0
         self.blk_at = {}
         self.phase = "blocks"
@@ -196,6 +288,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.budget = cfg.WRITE_BUDGET_MS        # 每 tick 写方块的时间预算（ms，/structureim budget 调）
         self.threads = cfg.THREADS_DEFAULT       # 多线程：>=2 时结构解析走后台线程
         self.parallel = cfg.PARALLEL_DEFAULT     # 相邻分区并行：提前加载几个邻区
+        self.nbt_limit = cfg.ITEM_NBT_MAX_KB     # 物品 NBT 上限（0=不裁剪）
         self._bg = None                          # 正在后台解析的任务
         self.last_bpt = 0.0                      # 上次实测「每 tick 写多少块」，用于预估耗时
         self._page = 0
@@ -329,6 +422,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.budget = cfg.WRITE_BUDGET_MS
         self.threads = cfg.THREADS_DEFAULT
         self.parallel = cfg.PARALLEL_DEFAULT
+        self.nbt_limit = cfg.ITEM_NBT_MAX_KB
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
@@ -379,6 +473,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 except (TypeError, ValueError):
                     pass
                 try:
+                    nl = int(util.u(raw.get("nbtlimit")))
+                    if nl == 0 or 8 <= nl <= 1024:
+                        self.nbt_limit = nl
+                        cfg.ITEM_NBT_MAX_KB = nl
+                except (TypeError, ValueError):
+                    pass
+                try:
                     speed = int(util.u(raw.get("speed")))
                     self.tick_speed = max(cfg.SPEED_MIN, min(cfg.SPEED_MAX, speed))
                 except (TypeError, ValueError):
@@ -409,7 +510,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "bigwait": util.b(str(self.big_wait)),
                  "budget": util.b(str(self.budget)),
                  "threads": util.b(str(self.threads)),
-                 "parallel": util.b(str(self.parallel))})
+                 "parallel": util.b(str(self.parallel)),
+                 "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
             util.log_exc("save config")
 
@@ -526,6 +628,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_threads(pid, a1)
         elif action in (u"parallel", u"para"):
             self.cmd_parallel(pid, a1)
+        elif action in (u"nbtlimit", u"nbt"):
+            self.cmd_nbtlimit(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -676,6 +780,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§a相邻分区并行：§f%d §7（提前加载 %d 个邻区，与写入重叠）" % (v, v - 1))
         else:
             self.tell(pid, u"§a相邻分区并行：§f关")
+
+    def cmd_nbtlimit(self, pid, text):
+        """物品 NBT 上限：0 = 不裁剪（默认，盒中盒原样保留）"""
+        try:
+            v = int((text or u"").strip())
+        except ValueError:
+            cur = self.nbt_limit
+            self.tell(pid, u"§e用法：/structureim nbtlimit <0|8-1024> §7当前 %s" %
+                      (u"不裁剪" if cur <= 0 else u"%d KB" % cur))
+            self.tell(pid, u"§7盒中盒这类超大 NBT 默认完整保留；真卡了再设上限")
+            return
+        if v != 0 and not (8 <= v <= 1024):
+            self.tell(pid, u"§c范围 0（不裁剪）或 8~1024 KB")
+            return
+        self.nbt_limit = v
+        cfg.ITEM_NBT_MAX_KB = v
+        self._save()
+        if v <= 0:
+            self.tell(pid, u"§a物品 NBT：§f不裁剪 §7（完整保留）")
+        else:
+            self.tell(pid, u"§a物品 NBT 上限：§f%d KB §7（超出的只留物品本体）" % v)
 
     def cmd_znum(self, pid, text):
         try:
@@ -1462,6 +1587,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._step_wake(job, comp)
         elif job.phase == "ents":
             self._step_ents(job, comp)
+        elif job.phase == "items":
+            self._step_items(job)
         elif job.phase == "mobs":
             self._step_mobs(job)
         else:
@@ -1660,6 +1787,59 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         else:
             self._next_section(job)
 
+    def _queue_items(self, job, node, pos):
+        """把容器里的物品排进队列（真正写入放到 items 阶段分帧做）"""
+        entries = node if isinstance(node, list) else _val(node)
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            item = _item_dict(entry)
+            if not item:
+                continue
+            if item.get("trim"):
+                job.item_trim += 1
+            d = item["dict"]
+            # 同时准备好普通 dict 版本：引擎有的版本不收 typed 包装
+            plain = dict(d)
+            ud = d.get("userData")
+            if isinstance(ud, dict) and ud:
+                plain["userData"] = _typed_to_plain(ud)
+            job.item_queue.append((d, item["slot"], pos, plain))
+
+    def _step_items(self, job):
+        """分帧写入容器物品
+
+        盒中盒结构单件物品 NBT 可达 2MB（全盒子十几 MB），一 tick 全灌进去
+        会把主线程顶死。这里按时间预算摊到多个 tick，数据一点都不丢。
+        """
+        comp = self._items()
+        if comp is None:
+            job.item_queue = []
+            self._next_section(job)
+            return
+        dim = job.dim
+        budget = self._write_budget()
+        t0 = time.time()
+        while job.item_queue:
+            d, slot, pos, plain = job.item_queue[0]
+            ok = False
+            try:
+                ok = bool(comp.SpawnItemToContainer(d, slot, pos, dim))
+                if not ok and isinstance(plain.get("userData"), dict):
+                    # typed 包装被拒时退回普通 dict 再试一次
+                    ok = bool(comp.SpawnItemToContainer(plain, slot, pos, dim))
+            except Exception:
+                ok = False
+            if ok:
+                job.item_ok += 1
+            else:
+                job.item_fail += 1
+            job.item_queue.pop(0)
+            # 单件就可能吃掉整个预算，至少保证每 tick 推进一件
+            if (time.time() - t0) * 1000.0 >= budget and job.item_queue:
+                return
+        self._next_section(job)
+
     def _step_ents(self, job, comp):
         """把方块实体数据写回去
 
@@ -1706,10 +1886,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     job.err = u"方块实体写入失败：" + util.u(
                         traceback.format_exc().strip().splitlines()[-1])
             if items:
-                job.item_ok += self._fill_items(items, pos, dim)
+                self._queue_items(job, items, pos)
 
         if job.ent_cursor >= total:
-            self._next_section(job)
+            if job.item_queue:
+                job.phase = "items"      # 单独一阶段，按时间预算分摊到多个 tick
+            else:
+                self._next_section(job)
 
     def _section(self, job):
         if job.sec_i >= len(job.sections):
@@ -1736,6 +1919,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.ent_cursor = 0
         job.retry = []
         job.retry_cursor = 0
+        job.item_queue = []
         if job.sec_i >= len(job.sections):
             # 所有分区跑完 -> 最后统一生成实体（矿车 / 船 / 生物 / 掉落物）
             job.phase = "mobs" if job.mobs else "done"
@@ -2092,26 +2276,6 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 ("tellraw", "title", "say", "me") and cmd not in self.replay_cmds):
             self.replay_cmds.append(cmd)
 
-    def _fill_items(self, node, pos, dim):
-        """箱子 / 漏斗 / 木桶 / 潜影盒 / 发射器 里的物品"""
-        comp = self._items()
-        if comp is None:
-            return 0
-        entries = node if isinstance(node, list) else _val(node)
-        if not isinstance(entries, list):
-            return 0
-        ok = 0
-        for entry in entries:
-            item = _item_dict(entry)
-            if not item:
-                continue
-            try:
-                if comp.SpawnItemToContainer(item["dict"], item["slot"], pos, dim):
-                    ok += 1
-            except Exception:
-                pass
-        return ok
-
     def _step_wake(self, job, comp):
         """红石那批方块补一次带更新的写入，让它们重新认邻居"""
         sec = self._section(job)
@@ -2159,6 +2323,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if job.fail:
                 msg += u" / %d 失败" % job.fail
             msg += u"，%.1f 秒)" % (job.tick / 20.0)
+            if job.item_ok or job.item_fail:
+                msg += u" §7· 物品 §f%d" % job.item_ok
+                if job.item_fail:
+                    msg += u"§7(失败 %d)" % job.item_fail
+                if job.item_trim:
+                    msg += u"§7(裁剪 %d)" % job.item_trim
             if job.entities:
                 msg += u" §7· 方块实体 §f%d" % job.ent_ok
                 if job.ent_fail:

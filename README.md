@@ -105,6 +105,7 @@
 | `/structureim budget <2-25>` | 每 tick 写方块的时间预算（ms，默认 12；越大越快越卡，写入量本身会自动调速） |
 | `/structureim threads <1-8>` | 结构解析线程：≥2 时解析走后台，点放置不再卡主线程 |
 | `/structureim parallel <1-4>` | 相邻分区并行：提前加载相邻分区区块，轮到它时不用等 |
+| `/structureim nbtlimit <0\|8-1024>` | 物品 NBT 上限（KB）：默认 0 = 不裁剪，盒中盒原样保留 |
 | `/structureim manual` | 聊天框版图文教程 |
 | `/structureim selftest` | 环境自检 |
 
