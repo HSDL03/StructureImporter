@@ -257,6 +257,7 @@ SET_ROWS = [
     ("map",        u"地图画模式", "bool"),
     ("turbo",      u"急速模式",   "bool"),
     ("freeze",     u"冻结时间",   "bool"),
+    ("ta",         u"纯常加载",   "bool"),
     ("maparea",    u"常加载形状", "maparea"),
     ("threads",    u"解析线程",   "int"),
     ("parallel",   u"邻区并行",   "int"),

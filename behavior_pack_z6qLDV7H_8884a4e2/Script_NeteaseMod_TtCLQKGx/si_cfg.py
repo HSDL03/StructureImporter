@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast",
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast", "ta",
                "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
@@ -53,6 +53,14 @@ TICK_DEFAULT = False
 SPEED_DEFAULT = 3         # 每个分区等待多少秒（给区块加载留时间）
 SPEED_MIN = 1
 SPEED_MAX = 10
+
+# ---------------------------------------------------------------- 纯常加载模式
+# 开启后整张结构一次性挂 /tickingarea，玩家原地不动、不再跟随 TP。
+# 适合"想站在旁边看它长出来"的导入：区块加载靠常加载 + 首区等待 +
+# 写失败自动重试兜底。超大结构（几百格）也只占 1 个常加载名额（上限 10 个）。
+TA_MODE_DEFAULT = False
+TA_FIRST_WAIT = 60        # 常加载挂好后，第一个分区开写前等多少 tick（3 秒）
+TA_WAIT = 6               # 之后每个分区之间的间隔 tick（0.3 秒）
 
 # ---------------------------------------------------------------- 扫描
 MAX_DEPTH = 10            # 目录递归深度

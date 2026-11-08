@@ -229,6 +229,7 @@ HELP = [
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
+    u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
     u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
@@ -585,6 +586,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._liquid_idx = []                # 上一次切分区时挑出来的液体索引
         self._cfg_ver = 0                        # 存档里的配置版本（用于一次性迁移）
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
+        self.ta_mode = cfg.TA_MODE_DEFAULT       # 纯常加载：不跟随 TP，全结构挂 tickingarea
         self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
@@ -670,6 +672,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                         pass
                 if raw.get("maparea") is not None:
                     self.map_area = util.u(raw.get("maparea")) != u"0"
+                if raw.get("ta") is not None:
+                    self.ta_mode = util.u(raw.get("ta")) == u"1"
             elif raw:
                 path = util.u(raw)
         except Exception:
@@ -701,6 +705,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "freezesecs": util.b(str(self.freeze_secs)),
                  "mapspeed": util.b(str(self.map_speed)),
                  "maparea": util.b(u"1" if self.map_area else u"0"),
+                 "ta": util.b(u"1" if self.ta_mode else u"0"),
                  "cfgver": util.b(str(cfg.CFG_VERSION)),
                  "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
@@ -846,6 +851,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_turbo(pid, a1)
         elif action == u"fast":
             self.cmd_fast(pid, a1)
+        elif action in (u"ta", u"tacover"):
+            self.cmd_ta(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -1054,6 +1061,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.freeze_secs = v
         self._save()
         self.tell(pid, u"§a液体守护时长：§f%.1f 秒" % v)
+
+    def cmd_ta(self, pid, text):
+        """纯常加载模式：整张结构挂 tickingarea，玩家原地不动、不跟随 TP"""
+        t = (text or u"").strip().lower()
+        if t in (u"on", u"1", u"开", u"true"):
+            v = True
+        elif t in (u"off", u"0", u"关", u"false"):
+            v = False
+        elif not t:
+            v = not self.ta_mode
+        else:
+            self.tell(pid, u"§e用法：/structureim ta <on/off> §7当前 %s" %
+                      (u"开" if self.ta_mode else u"关"))
+            self.tell(pid, u"§7开启后整张结构挂一个常加载区块，人不用跟着传送，"
+                           u"站在旁边看它长出来")
+            return
+        self.ta_mode = v
+        self._save()
+        self.tell(pid, u"§a纯常加载模式：§f%s §7（%s）" %
+                  (u"开" if v else u"关",
+                   u"人不跟着跑，整张结构常加载" if v else u"恢复跟随 TP"))
 
     def cmd_turbo(self, pid, text):
         """急速模式：分区等待压到最短、写入预算拉满（大结构提速的主要手段）"""
@@ -1424,6 +1452,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.job.parse_secs = float(getattr(self, "_parse_secs", 0.0) or 0.0)
         self.job.side = side
         self.job.wash_idx = wash
+        if self.ta_mode:
+            self._ta_cover(self.job)
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
         self.job.speed_ticks = int(self.tick_speed) * 20
@@ -3100,6 +3130,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             # 急速模式只等 0.3 秒（给 TP 包处理时间），其余写不进的靠分区末尾
             # 自动重试兜底——这才是急速的本意，不能让强制等待把它盖掉
             job.waiting = True
+            if self.ta_mode:
+                # 纯常加载：首区等常加载真正把区块拉起来，之后各区只留小间隔
+                wait = cfg.TA_FIRST_WAIT if job.sec_i == 0 else cfg.TA_WAIT
+                job.wait_until = job.tick + wait
+                job.tp_wait = 0
+                return
             wait = cfg.TP_LOAD_WAIT_TURBO if self.turbo else cfg.TP_LOAD_WAIT
             # 竖排导入跨行时是远距离瞬移（如 1,45 -> 2,0），区块最易跟不上导致
             # 该分区大量写失败：强制降速等 4 秒再恢复原速。
@@ -3169,7 +3205,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         巨型结构以玩家为中心居中放置，导入却从最远的角落开始——
         那边区块没加载，SetBlockNew 会静默失败（就是"开始区域小块导入失败"）。
         分区中心离玩家超过 TP_MIN_DIST 就把玩家 TP 过去，区块随即加载。
+        纯常加载模式下整个结构已经挂了 tickingarea，直接跳过 TP。
         """
+        if self.ta_mode:
+            return 0
         sec = self._section(job)
         if sec is None or not sec["blocks"] or not job.pid:
             return 0
@@ -3194,6 +3233,42 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             util.log_exc("tp to section")
         return 0
+
+    def _ta_cover(self, job):
+        """纯常加载模式：给整张结构挂一个 tickingarea，玩家不再跟着分区跑
+
+        常加载挂好以后第一个分区等 TA_FIRST_WAIT 让区块真正加载，
+        之后每个分区只隔 TA_WAIT；写失败仍有分区末尾的自动重试兜底。
+        名字记进 job.areas，收尾/中止时由 _drop_area 统一摘除。
+        """
+        blocks = job.blocks
+        if not blocks:
+            return
+        bx, by, bz = job.base
+        pad = 16
+        x0 = bx + min(b[0] for b in blocks) - pad
+        x2 = bx + max(b[0] for b in blocks) + pad
+        y0 = by + min(b[1] for b in blocks) - pad
+        y2 = by + max(b[1] for b in blocks) + pad
+        z0 = bz + min(b[2] for b in blocks) - pad
+        z2 = bz + max(b[2] for b in blocks) + pad
+        cmd = self._command()
+        name = u"si_ta_all"
+        ok = False
+        if cmd:
+            try:
+                ok = bool(cmd.SetCommand(util.b(
+                    u"/tickingarea add %d %d %d %d %d %d %s" %
+                    (int(x0), int(y0), int(z0), int(x2), int(y2), int(z2), name))))
+            except Exception:
+                ok = False
+        if ok:
+            job.areas.append(name)
+            job.tp_wait = 1            # 首区走一次等待分支，给区块加载时间
+            self.tell(job.pid, u"§a纯常加载：§f整张结构已挂 tickingarea §7（%d×%d×%d，玩家不跟随传送）" %
+                      (int(x2 - x0 + 1), int(y2 - y0 + 1), int(z2 - z0 + 1)))
+        else:
+            self.tell(job.pid, u"§c常加载挂不上（世界已有 10 个区域？）§7本次退回跟随 TP")
 
     def _drop_area(self, job):
         while job.areas:
@@ -3486,6 +3561,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         u"turbo": "turbo",
         u"freeze": "freeze",
         u"maparea": "map_area",
+        u"ta": "ta_mode",
     }
 
     def _apply_opt(self, key, delta):
@@ -3530,6 +3606,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _opts_payload(self):
         """设置页要显示的一堆数值（每一行一个）"""
         return {
+            "ta": 1 if self.ta_mode else 0,
             "freeze": 1 if self.freeze else 0,
             "maparea": 1 if self.map_area else 0,
             "threads": int(self.threads),
