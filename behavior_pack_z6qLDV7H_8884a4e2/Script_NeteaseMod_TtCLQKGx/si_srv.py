@@ -53,6 +53,28 @@ def _norm_states(st):
     return out if out is not None else st
 
 
+def _native(v):
+    """py2 交给引擎的字符串一律转 UTF-8 字节串；py3（离线校验）保持原样"""
+    return util.b(v) if _PY2 else v
+
+
+def _eng_states(st):
+    """把 states 转成引擎 C++ 层能吃的样子
+
+    实测：states 的 key 是 unicode 时会刷 "PyDict's key is not string"，
+    这条错误每个带状态的方块一条（几十万块就是几十万条），引擎跟着就不稳。
+    引擎只认 UTF-8 字节串，所以 key/value 里的字符串统一转 bytes。
+    """
+    if not st or not _PY2:
+        return st
+    out = {}
+    for k, v in st.items():
+        if isinstance(v, _STR):
+            v = util.b(v)
+        out[util.b(k)] = v
+    return out
+
+
 def _merge_nbt(dst, src):
     """把结构里的 NBT 深合并进引擎返回的数据
 
@@ -405,10 +427,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def tell(self, pid, text):
         if not pid:
             return
+        msg = util.b(text)
+        if not msg:
+            return          # 空消息不发：新引擎会判成非法包，直接断开连接
         try:
             # 网易这族消息接口只吃 UTF-8 字节串：传 unicode 中文会被静默丢弃
             # （SetTipMessage/SetExtraData/NotifyOneMessage 同款坑，实测）
-            self._msg().NotifyOneMessage(pid, util.b(text), "")
+            # 第三个参数（颜色）也必须是**非空**字符串：传 "" 会触发
+            # "expected string with at least 1 characters" 的包校验失败，
+            # 服务端随后 onDisconnect(reason 41) 把世界关掉 —— 就是"显示出错"。
+            self._msg().NotifyOneMessage(pid, msg, util.b(u"§f"))
         except Exception:
             util.log_exc("tell")
 
@@ -465,7 +493,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if game is None:
             return
         try:
-            game.SetTipMessage(util.b(text))
+            # 空串会让引擎判成非法包（expected string with at least 1 characters），
+            # 清空小栏时发一个空格
+            game.SetTipMessage(util.b(text) or util.b(u" "))
         except Exception:
             pass
 
@@ -1779,7 +1809,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 aux = 0
                 if states:
                     try:
-                        aux = int(self._states().GetBlockAuxValueFromStates(name, states))
+                        aux = int(self._states().GetBlockAuxValueFromStates(
+                            util.b(name), _eng_states(states)))
                     except Exception:
                         aux = 0
                 cache[key] = aux
@@ -1973,7 +2004,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if states:
             # 老版本引擎不认 block 里的 states 时，这一次补写就是唯一生效路径
             try:
-                self._states().SetBlockStates(pos, states, dim)
+                self._states().SetBlockStates(pos, _eng_states(states), dim)
             except Exception:
                 pass
         return bool(ok)
@@ -2045,8 +2076,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 if blk is None:
                     blk = {"name": name, "aux": int(aux)}
                     if states:
-                        # states 跟着方块一起给引擎，含水/液体不会出现中间态
-                        blk["states"] = states
+                        # states 跟着方块一起给引擎，含水/液体不会出现中间态。
+                        # key 必须转 bytes，否则引擎刷 "PyDict's key is not string"
+                        blk["states"] = _eng_states(states)
                     bdict[key] = blk
                 # 建造阶段不触发邻居更新：否则红石/火把会边放边被弹掉
                 if self._place_block(comp, (bx + x, by + y, bz + z),
@@ -2728,7 +2760,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         # NBT: auto=1 保持开启；枚举: KEEP_ON=0 / REDSTONE_CONTROL=1
         rmode = 0 if auto in (1, True) else 1
         try:
-            if be.SetCommandBlock(pos, dim, cmd, name, mode, cond, rmode):
+            # 引擎这个接口只认 bytes：传 unicode 会刷
+            # "set_command_block error: cmd is not a str"，命令整条丢掉
+            if be.SetCommandBlock(pos, dim, _native(cmd), _native(name or u""),
+                                  mode, cond, rmode):
                 job.cmd_fixed += 1
         except Exception:
             pass
@@ -2976,12 +3011,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         page = max(0, min(int(page or 0), pages - 1))
         start = page * cfg.ROWS
         rows = []
+        # 这一包里的字符串一条都不能为空：新引擎按"至少 1 个字符"校验，
+        # 空的 dir/err 会让客户端 readNoHeader 失败，服务端随即断开世界。
+        def _s(v):
+            v = util.u(v)
+            return v if v else u" "
         for i in range(start, min(start + cfg.ROWS, total)):
             e = lib.entries[i]
-            rows.append([i + 1, e.name, e.rel])
+            rows.append([i + 1, _s(e.name), _s(e.rel)])
         data = {
-            "dir": lib.root,
-            "err": lib.err,
+            "dir": _s(lib.root),
+            "err": _s(lib.err),
             "total": total,
             "page": page,
             "pages": pages,
