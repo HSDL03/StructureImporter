@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "manual", "help2"]
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -89,8 +89,25 @@ TP_ZONE_SECS = 3           # 九宫格巡逻：每个区停多少秒（保证区
 TP_ZONE_DIV = 3            # 每幅地图切 3x3=9 个区
 MAP_GIVE_WAIT = 40        # 发地图：TP 到单元中心后等多少 tick 再 give（防空白图）
 MAP_HOLD_SECS = 4          # 地图放进玩家主手停留几秒让引擎渲染地形（否则挂墙是空白图）
-MAP_TA_RADIUS = 4          # 发图前给整幅 128x128 单元挂常加载区块（圆半径 4 chunk 覆盖 8x8）
+MAP_TA_RADIUS = 4          # 旧版圆形常加载半径（已改用方形 _map_ta_add，仅留作对照）
 MAP_TA_WAIT = 60           # 常加载区块挂上后等多少 tick 让区块真正加载完再 give
+
+# ---------------------------------------------------------------- 地图画速度档
+# 慢的根源：每张图都要「挂常加载 -> 等 3 秒 -> TP 九个区、每区停 3 秒 -> 拿图 4 秒」。
+# 三处提速：①常加载改成方形精确覆盖整幅（圆会切掉四角，所以以前得靠巡逻补）
+#          ②下一张图的常加载在画当前图时提前挂好（等待与绘制重叠）
+#          ③每区等待从"秒级"降到"tick 级"（区块本来就都加载着）
+# 0 = 稳（旧行为，最保险）  1 = 快（默认）  2 = 极速（可能有缺角，缺就降档）
+MAP_SPEED_DEFAULT = 1
+MAP_SQ_Y = 40              # 方形常加载的纵向厚度（区块只看 xz，给够就行）
+MAP_TA_WAIT_FAST = 30      # 快档：本张图第一次挂常加载后等多少 tick
+MAP_ZONE_WAIT = 10         # 快档：巡逻每个区停多少 tick
+MAP_ZONE_WAIT_FAST = 4     # 极速档：每区停多少 tick
+MAP_HOLD_TICKS = 30        # 快档：地图在主手停留多少 tick（1.5 秒）
+MAP_HOLD_FAST = 10         # 极速档：0.5 秒
+MAP_PREFETCH = True        # 快档/极速档：提前给下一张图挂常加载（overlap 掉等待）
+MAP_MOUNT_BATCH = 4        # 挂框每 tick 挂几张（原来一张 5 tick，10 张要 2.5 秒）
+MAP_MOUNT_WAIT = 20        # 全部画完回墙前等多少 tick（墙区块加载）
 
 TURBO_DEFAULT = False     # 急速模式：分区等待降到 1 tick（速度换卡顿风险）
 

@@ -202,6 +202,7 @@ HELP = [
     u"§f/structureim split <开|关> §7分区导入开关",
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
+    u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳 1快(默认) 2极速",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
@@ -540,6 +541,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._frozen_rules = None            # 被改过的游戏规则原值，结束时恢复
         self._skipped = 0                    # 上一次整理时跳过的运行时方块数
         self._liquid_idx = []                # 上一次切分区时挑出来的液体索引
+        self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
@@ -609,6 +611,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.freeze_secs = max(0.0, min(cfg.FREEZE_SECS_MAX, fs))
                 except (TypeError, ValueError):
                     pass
+                try:
+                    ms = int(util.u(raw.get("mapspeed")))
+                    self.map_speed = max(0, min(2, ms))
+                except (TypeError, ValueError):
+                    pass
             elif raw:
                 path = util.u(raw)
         except Exception:
@@ -638,6 +645,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "parallel": util.b(str(self.parallel)),
                  "freeze": util.b(u"1" if self.freeze else u"0"),
                  "freezesecs": util.b(str(self.freeze_secs)),
+                 "mapspeed": util.b(str(self.map_speed)),
                  "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
             util.log_exc("save config")
@@ -689,6 +697,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§e三、地图墙（地图画模式开时自动生效）：")
         self.tell(pid, u"§7  · 导完自动搭墙并给你编号地图，凑近看就是整幅画")
         self.tell(pid, u"§7  · 巡图参数：§fznum <1-9> §7每幅巡几区（默认3）、§fzwait <1-30> §7每区停几秒（默认3）")
+        self.tell(pid, u"§7  · 速度档：§fmapspeed <0-2> §7（0稳/1快/2极速），快档单张约 2~3 秒")
+        self.tell(pid, u"§7    快档靠这招提速：常加载改成方形盖住整幅 + 下一张的区块提前挂好")
         self.tell(pid, u"§e四、调速：§fbudget <2-20> §7每 tick 写入预算（ms，越大越快越卡，默认7）")
         self.tell(pid, u"§7  写入量会按机器实测速度自动调，卡就调小、闲着就调大")
         self.tell(pid, u"§e五、并行：§fthreads <1-8> §7解析线程（≥2 后台解析）、§fparallel <1-4> §7相邻分区并行")
@@ -739,6 +749,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self._clear_areas(self.job)
             self.job = None
             self._bg = None            # 后台解析结果直接丢弃（线程跑完自然退出）
+            if self.map_queue:
+                for _ci in _range(len(self.map_queue.get("cells") or [])):
+                    self._map_ta_del(self.map_queue, _ci)
+                self.map_queue = None
             self._freeze_off()         # 中止也要把游戏规则还回去
             self._tip_raw(u"")
             self.tell(pid, u"§a已中止")
@@ -766,6 +780,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_freeze(pid, a1)
         elif action in (u"freezetime", u"freezesecs", u"frost"):
             self.cmd_freezetime(pid, a1)
+        elif action in (u"mapspeed", u"mapspd", u"mspeed"):
+            self.cmd_mapspeed(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -975,6 +991,43 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         else:
             self.tell(pid, u"§a物品 NBT 上限：§f%d KB §7（超出的只留物品本体）" % v)
 
+    def cmd_mapspeed(self, pid, text):
+        """地图画速度档：0 稳（旧逻辑）/ 1 快（默认）/ 2 极速
+
+        快的来源不是把画质降级，而是三件事：
+          1. 常加载从圆形（切四角）改成方形，正好盖住整幅 128×128
+          2. 下一张图的常加载在这张画的时候就挂好，等待与绘制重叠
+          3. 巡逻点等待从"秒级"压到 tick 级（区块本来就都加载着）
+        """
+        t = (text or u"").strip().lower()
+        table = {u"0": 0, u"稳": 0, u"safe": 0, u"safe0": 0,
+                 u"1": 1, u"快": 1, u"fast": 1,
+                 u"2": 2, u"极速": 2, u"turbo": 2}
+        if not t:
+            self.tell(pid, u"§e用法：/structureim mapspeed <0-2> §7当前 §f%d §7（%s）" %
+                      (self.map_speed, [u"稳", u"快", u"极速"][self.map_speed]))
+            per = self._map_first_wait(False) + self._map_give_wait() * 2 + \
+                self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)
+            self.tell(pid, u"§7单张约 §f%.1f 秒§7（%d 个巡逻点）；0=最保险，2=最快但可能缺角" %
+                      (per / 20.0, min(self.zones_n, 9)))
+            return
+        if t not in table:
+            self.tell(pid, u"§c只认 0 / 1 / 2（稳 / 快 / 极速）")
+            return
+        self.map_speed = table[t]
+        self._save()
+        if self.map_speed == 0:
+            self.tell(pid, u"§a地图画速度：§f稳 §7（旧逻辑，圆形常加载 + 每区停 %d 秒）" %
+                      self.zone_secs)
+        else:
+            per = self._map_first_wait(False) + self._map_give_wait() * 2 + \
+                self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)
+            self.tell(pid, u"§a地图画速度：§f%s §7（单张约 %.1f 秒，方形常加载 + 提前挂下一张）" %
+                      (u"快" if self.map_speed == 1 else u"极速", per / 20.0))
+            self.tell(pid, u"§7还能更快：§fznum 1 §7（方形常加载已盖住整幅，理论上一个点就够）")
+            if self.map_speed == 2:
+                self.tell(pid, u"§7极速档如果出现缺角/空白，改回 §f1 §7或把 §fznum §7调大")
+
     def cmd_znum(self, pid, text):
         try:
             v = int((text or u"").strip())
@@ -1028,6 +1081,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                   (self.parallel, u"提前加载邻区" if self.parallel > 1 else u"关"))
         self.tell(pid, u"§6冻结时间：§f%s §7（守液体 %.1f 秒）" %
                   (u"开" if self.freeze else u"关", self.freeze_secs))
+        self.tell(pid, u"§6地图速度：§f%s §7（单张约 %.1f 秒）" %
+                  ([u"稳", u"快", u"极速"][self.map_speed],
+                   (self._map_first_wait(False) + self._map_give_wait() * 2 +
+                    self._map_hold() + self._map_zone_wait() *
+                    max(0, self.zones_n - 1)) / 20.0))
 
     def cmd_test(self, pid):
         """在身前写一块金块，用来确认 SetBlockNew 本身是否可用"""
@@ -1278,7 +1336,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                           cz0 + (rz * ms + ms // 2) // dv)
                          for rz in range(dv) for rx in range(dv)]
                 cells.append({"zones": zones, "k": r * cols + c + 1, "zi": 0,
-                              "anchor": (cx0, cz0)})
+                              "anchor": (cx0, cz0), "ta": None})
 
         # ---- 玩家面前搭地图墙
         built = self._build_map_wall(job.pid, cols, rows)
@@ -1292,8 +1350,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             "wall": wall_info,
             "y": job.base[1] + max(ys) + 6.0}
         self._map_cd = 0
-        self.tell(job.pid, u"§a地图墙已搭好（%d列×%d行）。开始巡图：每张图分 §f%d×%d §a区，每幅巡前 §f%d §a区、每区停 §f%d §a秒（znum/zwait 可调）…" %
-                  (cols, rows, dv, dv, self.zones_n, self.zone_secs))
+        if self.map_speed >= 1:
+            speed_txt = u"§a快" if self.map_speed == 1 else u"§c极速"
+            self.tell(job.pid, u"§a地图墙已搭好（%d列×%d行，%s§a档）。逐张画：每张分 §f%d §a个巡逻点、"
+                               u"常加载覆盖整幅（mapspeed 可调档，缺角就调回 0）…" %
+                      (cols, rows, speed_txt, min(self.zones_n, dv * dv)))
+        else:
+            self.tell(job.pid, u"§a地图墙已搭好（%d列×%d行）。开始巡图：每张图分 §f%d×%d §a区，每幅巡前 §f%d §a区、每区停 §f%d §a秒（znum/zwait 可调）…" %
+                      (cols, rows, dv, dv, self.zones_n, self.zone_secs))
 
     def _build_map_wall(self, pid, cols, rows):
         """在玩家面前搭一面 cols×rows 的墙：展示框方块 + 背后墙块
@@ -1339,6 +1403,95 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             util.log_exc("build map wall")
             return None
 
+    # ---- 速度档取等待时间
+    def _map_zone_wait(self):
+        """巡逻每个点停多少 tick"""
+        if self.map_speed >= 2:
+            return cfg.MAP_ZONE_WAIT_FAST
+        if self.map_speed == 1:
+            return cfg.MAP_ZONE_WAIT
+        return max(1, int(self.zone_secs)) * 20
+
+    def _map_hold(self):
+        """地图在主手停留多少 tick（引擎要在这段时间把地形画进图里）"""
+        if self.map_speed >= 2:
+            return cfg.MAP_HOLD_FAST
+        if self.map_speed == 1:
+            return cfg.MAP_HOLD_TICKS
+        return max(1, int(self.zone_secs)) * 20
+
+    def _map_first_wait(self, fresh):
+        """进入一张新图时等多久：常加载早挂好了就短，现挂的才等"""
+        if self.map_speed >= 2:
+            return 10 if fresh else cfg.MAP_ZONE_WAIT_FAST
+        if self.map_speed == 1:
+            return cfg.MAP_TA_WAIT_FAST if fresh else cfg.MAP_ZONE_WAIT
+        return cfg.MAP_TA_WAIT
+
+    def _map_give_wait(self):
+        return 10 if self.map_speed == 0 else 4
+
+    # ---- 常加载：方形精确覆盖整幅
+    def _map_ta_add(self, q, i):
+        """给第 i 张图的单元挂常加载
+
+        以前用 circle 半径 4：圆角会切掉 128×128 的四个角，所以必须靠巡逻补画。
+        改成方形刚好盖住整幅，巡逻点就可以压到最少。
+        """
+        try:
+            cell = q["cells"][i]
+        except IndexError:
+            return False
+        if cell.get("ta"):
+            return True
+        cmd = self._command()
+        if not cmd:
+            return False
+        cx0, cz0 = cell["anchor"]
+        ms = cfg.MAP_SIZE
+        y = int(q["y"])
+        half = cfg.MAP_SQ_Y // 2
+        name = u"si_map_%d" % cell["k"]
+        try:
+            ok = bool(cmd.SetCommand(util.b(
+                u"/tickingarea add %d %d %d %d %d %d %s" %
+                (cx0, y - half, cz0, cx0 + ms - 1, y + half, cz0 + ms - 1, name))))
+        except Exception:
+            ok = False
+        if ok:
+            cell["ta"] = name
+        return ok
+
+    def _map_ta_del(self, q, i):
+        try:
+            cell = q["cells"][i]
+        except IndexError:
+            return
+        name = cell.get("ta")
+        if not name:
+            return
+        cmd = self._command()
+        if cmd:
+            try:
+                cmd.SetCommand(util.b(u"/tickingarea remove %s" % name))
+            except Exception:
+                pass
+        cell["ta"] = None
+
+    def _map_prefetch(self, q, i):
+        """画第 i 张时，把第 i+1 张的常加载先挂上，轮到时区块已就绪"""
+        if not cfg.MAP_PREFETCH or self.map_speed < 1:
+            return
+        nxt = i + 1
+        if nxt < 0 or nxt >= len(q["cells"]):
+            return
+        if q["cells"][nxt].get("ta"):
+            return
+        try:
+            self._map_ta_add(q, nxt)
+        except Exception:
+            util.log_exc("map prefetch")
+
     def _give_maps(self):
         """逐张：TP 到单元中心 -> 等区块加载 -> /give 生成地图 -> 取走挂到墙上"""
         q = self.map_queue
@@ -1349,25 +1502,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         try:
             if q["stage"] == "zone":
                 cell = q["cells"][q["i"]]
-                # 地图由携带者持续绘制周围地形：一区就 give，跟着人走完九区，
-                # 走完才收回来挂墙。TA 保证整幅单元区块加载（含give前的第一帧）。
+                # 地图由携带者持续绘制周围地形：一区就 give，跟着人走完巡逻点，
+                # 走完才收回来挂墙。常加载保证整幅单元区块都加载着。
+                fresh = not cell.get("ta")
+                got_ta = self._map_ta_add(q, q["i"]) if fresh else True
+                # 下一张的常加载现在就开始挂（与这张的绘制重叠，省掉一次等区块）
+                self._map_prefetch(q, q["i"])
                 cx, cz = cell["zones"][0]
-                name = u"si_map_%d" % cell["k"]
-                cmd = self._command()
-                if cmd:
-                    cmd.SetCommand(util.b(u"/tickingarea add circle %d %d %d %d %s" %
-                                          (cx, int(q["y"]), cz, cfg.MAP_TA_RADIUS, name)))
-                    q["areas"].append(name)
                 self.factory.CreatePos(pid).SetPos((cx, q["y"], cz))
                 q["stage"] = "give"
                 q["retry"] = 0
-                self._map_cd = cfg.MAP_TA_WAIT      # 等整幅区块真正加载完再给图
+                if fresh and not got_ta:
+                    # 常加载挂不上（世界已有 10 个区域 / 同名残留）：多等一会儿再给图
+                    self._map_cd = cfg.MAP_ZONE_WAIT * 3
+                else:
+                    self._map_cd = self._map_first_wait(fresh)
                 return
             if q["stage"] == "give":
                 cell = q["cells"][q["i"]]
                 cell["zi"] = 1                      # 一区已站；实测前 3 区就能画满整幅
                 q["stage"] = "give2"
-                self._map_cd = 10
+                self._map_cd = self._map_give_wait()
                 return
             if q["stage"] == "give2":
                 cmd = self._command()
@@ -1375,7 +1530,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.map_queue = None
                     return
                 q["stage"] = "equip"
-                self._map_cd = 10                       # 等 give 到包
+                self._map_cd = self._map_give_wait()    # 等 give 到包
                 return
             if q["stage"] == "equip":
                 # 地图必须先在玩家主手里停留渲染，引擎才把地形画上去；
@@ -1385,12 +1540,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     q["retry"] += 1
                     if q["retry"] <= 3:
                         q["stage"] = "give2"
-                        self._map_cd = 20
+                        self._map_cd = 10
                         return
                     self.tell(pid, u"§c第 %d 张地图生成失败，跳过" % q["cells"][q["i"]]["k"])
+                    self._map_ta_del(q, q["i"])
                     q["i"] += 1
                     q["stage"] = "zone"
-                    self._map_cd = 5
+                    self._map_cd = 2
                     return
                 mu, slot, mapd = found
                 try:
@@ -1402,7 +1558,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     q["map_uuid"] = mu
                     q["hold_slot"] = sel
                     q["stage"] = "patrol"
-                    self._map_cd = max(1, int(self.zone_secs)) * 20
+                    self._map_cd = self._map_hold()
                 except Exception:
                     util.log_exc("equip map")
                     q["map_uuid"] = mu
@@ -1421,24 +1577,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 zx, zz = cell["zones"][zi]
                 cell["zi"] = zi + 1
                 self.factory.CreatePos(pid).SetPos((zx, q["y"], zz))
-                self._map_cd = max(1, int(self.zone_secs)) * 20
+                self._map_cd = self._map_zone_wait()
                 return
             if q["stage"] == "mount":
+                # 批量挂框：原来一张 5 tick，10 张就是 2.5 秒白等
+                batch = max(1, cfg.MAP_MOUNT_BATCH if self.map_speed >= 1 else 1)
+                while batch > 0 and q["i"] < len(q["maps"]):
+                    k, item = q["maps"][q["i"]]
+                    fp = q["frames"][k - 1] if q["frames"] else None
+                    if fp is not None:
+                        # 关键：用引擎自己产出的物品 dict（含正确 aux 地图编号与完整
+                        # userData）；自己拼 dict 引擎会当空白图渲染
+                        be = self._blockEnt()
+                        if not be.SetFrameItem(fp, q.get("dim", 0), dict(item)):
+                            self.tell(pid, u"§c第 %d 张挂框失败" % k)
+                    q["i"] += 1
+                    batch -= 1
                 if q["i"] >= len(q["maps"]):
                     self.tell(pid, u"§a地图墙挂好了，凑近看就是完整的一幅画")
                     self.map_queue = None
                     return
-                k, item = q["maps"][q["i"]]
-                fp = q["frames"][k - 1] if q["frames"] else None
-                if fp is not None:
-                    # 关键：用引擎自己产出的物品 dict（含正确 aux 地图编号与完整
-                    # userData）；自己拼 dict 引擎会当空白图渲染
-                    d = dict(item)
-                    be = self._blockEnt()
-                    if not be.SetFrameItem(fp, q.get("dim", 0), d):
-                        self.tell(pid, u"§c第 %d 张挂框失败" % k)
-                q["i"] += 1
-                self._map_cd = 5
+                self._map_cd = 1
                 return
             # grab：主手渲染完 -> 恢复原主手物品 -> 挂上墙
             k = q["cells"][q["i"]]["k"]
@@ -1461,8 +1620,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                       "userData": {"map_uuid": mu}}))
             else:
                 self.tell(pid, u"§c第 %d 张地图生成失败，跳过" % k)
-            # 这张图发完，撤掉它的常加载区块
-            while q["areas"]:
+            # 这张图发完，撤掉它的常加载区块，顺手把下一张的挂上（等待与绘制重叠）
+            self._map_ta_del(q, q["i"])
+            self._map_prefetch(q, q["i"])
+            while q["areas"]:                       # 旧版本残留的 circle 常加载
                 nm = q["areas"].pop(0)
                 rc = self._command()
                 if rc:
@@ -1483,12 +1644,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                         self.factory.CreatePos(pid).SetPos(w)
                     except Exception:
                         util.log_exc("tp to wall")
-                self._map_cd = 60                    # 等墙区块加载
+                self._map_cd = (cfg.MAP_MOUNT_WAIT if self.map_speed >= 1 else 60)
                 return
             q["stage"] = "zone"
-            self._map_cd = 5
+            self._map_cd = 2
         except Exception:
             util.log_exc("give maps")
+            try:
+                for _ci in _range(len(q.get("cells") or [])):
+                    self._map_ta_del(q, _ci)
+            except Exception:
+                pass
             try:
                 while q["areas"]:
                     nm = q["areas"].pop(0)
