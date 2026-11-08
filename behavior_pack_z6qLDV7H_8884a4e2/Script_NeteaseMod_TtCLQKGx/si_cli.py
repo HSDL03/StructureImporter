@@ -90,6 +90,13 @@ class SiClientSystem(clientApi.GetClientSystemCls()):
     def set_speed(self, value):
         self.send_settings({"speed": value})
 
+    def set_opt(self, key, delta):
+        """设置页的一行：key + 增减方向（-1 / +1），具体夹值交给服务端"""
+        self.send_settings({"opt": util.u(key), "delta": int(delta)})
+
+    def run_fast(self):
+        self.send_settings({"opt": "fast", "delta": 0})
+
     def send_settings(self, payload):
         try:
             data = {"pid": self.pid()}

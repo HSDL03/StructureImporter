@@ -248,9 +248,56 @@ class SiScreen(ScreenNode):
         if self.sys is not None:
             self.sys.close()
 
+# ---------------------------------------------------------------- 设置页行表
+# 顺序与 resource_pack/.../ui/structure_im_setting.json 的 si_r0..si_r15 一一对应
+SET_ROWS = [
+    ("split",      u"分区模式",   "bool"),
+    ("tick",       u"防缺失",     "bool"),
+    ("chunk",      u"分块模式",   "bool"),
+    ("map",        u"地图画模式", "bool"),
+    ("turbo",      u"急速模式",   "bool"),
+    ("freeze",     u"冻结时间",   "bool"),
+    ("maparea",    u"常加载形状", "maparea"),
+    ("threads",    u"解析线程",   "int"),
+    ("parallel",   u"邻区并行",   "int"),
+    ("budget",     u"每tick预算", "ms"),
+    ("mapspeed",   u"地图速度",   "mapspeed"),
+    ("znum",       u"每幅巡区",   "zone"),
+    ("zwait",      u"每区停留",   "sec"),
+    ("freezetime", u"守水秒数",   "sec"),
+    ("bigwait",    u"跨行降速",   "sec"),
+    ("nbtlimit",   u"物品NBT",    "kb"),
+]
+
+
+def _opt_text(kind, value):
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        v = 0
+    if kind == "bool":
+        return u"§a开" if v else u"§7关"
+    if kind == "maparea":
+        return u"方形" if v else u"圆形"
+    if kind == "mapspeed":
+        return [u"稳", u"快", u"极速"][max(0, min(2, v))]
+    if kind == "ms":
+        return u"%d ms" % v
+    if kind == "sec":
+        return u"%d 秒" % v
+    if kind == "zone":
+        return u"%d 区" % v
+    if kind == "kb":
+        return u"不裁剪" if v <= 0 else u"%d KB" % v
+    return u"%d" % v
+
 
 class SiSettingScreen(ScreenNode):
-    """设置页：分区模式 / 防大型结构缺失 / 每区间隔"""
+    """设置页：一行一个可调参数，点 − / + 就地改，自动存档
+
+    控件名固定 si_r{i}_name/val/minus/plus，行顺序由 SET_ROWS 决定。
+    以后要加参数：SET_ROWS 追加一行 + 重新生成 ui json 即可。
+    """
 
     ROOT = "/si_set_root"
 
@@ -258,32 +305,20 @@ class SiSettingScreen(ScreenNode):
         super(SiSettingScreen, self).__init__(namespace, name, param)
         self.sys = (param or {}).get("client")
         self._born = None
-        self._split_on = False
-        self._tick_on = False
-        self._chunk_on = False
-        self._map_on = False
-        self._turbo_on = False
-        self._thr_on = False
+        self._vals = {}
 
     def Create(self):
         self._born = time.time()
         if self.sys is not None:
             self.sys.set_screen = self
-        self._touch("si_split_btn", self._on_split)
-        self._touch("si_tick_btn", self._on_tick)
-        self._touch("si_chunk_btn", self._on_chunk)
-        self._touch("si_map_btn", self._on_map)
-        self._touch("si_turbo_btn", self._on_turbo)
-        self._touch("si_thr_btn", self._on_thr)
-        self._touch("si_speed_apply", self._on_speed)
+        for i, row in enumerate(SET_ROWS):
+            self._touch("si_r%d_minus" % i, self._on_step(row[0], -1))
+            self._touch("si_r%d_plus" % i, self._on_step(row[0], 1))
+            self._label(self.ROOT + "/si_r%d_name" % i, row[1])
+        self._touch("si_fast_btn", self._on_fast)
         self._touch("si_set_close", self._on_close)
-        self._split_label(u"分区模式：关")
-        self._tick_label(u"防大型结构缺失：关")
-        self._chunk_label(u"分块模式：关")
-        self._map_label(u"地图画模式：关")
-        self._turbo_label(u"急速模式：关")
-        self._thr_label(u"并行加速：关")
-        self._speed_text(u"")
+        for i, row in enumerate(SET_ROWS):
+            self._render_row(i, 0)
         data = self.sys.last_data if self.sys is not None else None
         if data:
             self.apply(data)
@@ -317,118 +352,40 @@ class SiSettingScreen(ScreenNode):
         except Exception:
             pass
 
-    def _split_label(self, text):
-        self._label(self.ROOT + "/si_split_btn/button_label", text)
-
-    def _tick_label(self, text):
-        self._label(self.ROOT + "/si_tick_btn/button_label", text)
-
-    def _chunk_label(self, text):
-        self._label(self.ROOT + "/si_chunk_btn/button_label", text)
-
-    def _map_label(self, text):
-        self._label(self.ROOT + "/si_map_btn/button_label", text)
-
-    def _turbo_label(self, text):
-        self._label(self.ROOT + "/si_turbo_btn/button_label", text)
-
-    def _thr_label(self, text):
-        self._label(self.ROOT + "/si_thr_btn/button_label", text)
-
-    def _speed_text(self, text):
-        c = self._ctl("si_speed")
-        if c is None:
-            return
-        try:
-            c.asTextEditBox().SetEditText(_u(text))
-        except Exception:
-            pass
-
-    def _speed_get(self):
-        c = self._ctl("si_speed")
-        if c is None:
-            return u""
-        try:
-            return _u(c.asTextEditBox().GetEditText())
-        except Exception:
-            return u""
+    def _render_row(self, i, value):
+        row = SET_ROWS[i]
+        self._vals[row[0]] = value
+        self._label(self.ROOT + "/si_r%d_val" % i, _opt_text(row[2], value))
 
     # ---- 数据
     def apply(self, data):
         data = data or {}
-        self._split_on = bool(data.get("split"))
-        self._tick_on = bool(data.get("tick"))
-        self._chunk_on = bool(data.get("chunk"))
-        self._map_on = bool(data.get("map"))
-        self._turbo_on = bool(data.get("turbo"))
-        self._thr_on = bool(data.get("threads"))
-        self._split_label(u"分区模式：开" if self._split_on else u"分区模式：关")
-        self._tick_label(u"防大型结构缺失：开" if self._tick_on
-                         else u"防大型结构缺失：关")
-        self._chunk_label(u"分块模式：开" if self._chunk_on else u"分块模式：关")
-        self._map_label(u"地图画模式：开" if self._map_on else u"地图画模式：关")
-        self._turbo_label(u"急速模式：开" if self._turbo_on else u"急速模式：关")
-        self._thr_label(u"并行加速：开" if self._thr_on else u"并行加速：关")
-        speed = data.get("speed")
-        if speed is not None:
-            cur = self._speed_get().strip()
-            if cur != _u(speed):
-                self._speed_text(_u(speed))
+        opts = data.get("opts") or {}
+        legacy = {"split": data.get("split"), "tick": data.get("tick"),
+                  "chunk": data.get("chunk"), "map": data.get("map"),
+                  "turbo": data.get("turbo"), "threads": data.get("threads")}
+        for i, row in enumerate(SET_ROWS):
+            key = row[0]
+            if key in opts:
+                value = opts.get(key)
+            elif key == "threads" and legacy.get("threads") is not None:
+                value = 2 if legacy.get("threads") else 1
+            elif legacy.get(key) is not None:
+                value = 1 if legacy.get(key) else 0
+            else:
+                value = self._vals.get(key, 0)
+            self._render_row(i, value)
 
     # ---- 交互
-    def _on_split(self, args):
-        self._split_on = not self._split_on
-        self._split_label(u"分区模式：开" if self._split_on else u"分区模式：关")
-        if self.sys is not None:
-            self.sys.toggle_split(self._split_on)
+    def _on_step(self, key, delta):
+        def cb(args):
+            if self.sys is not None:
+                self.sys.set_opt(key, delta)
+        return cb
 
-    def _on_tick(self, args):
-        self._tick_on = not self._tick_on
-        self._tick_label(u"防大型结构缺失：开" if self._tick_on
-                         else u"防大型结构缺失：关")
-        if self._tick_on:
-            # 防缺失依赖分区，本地一起翻，服务端也会强制打开
-            self._split_on = True
-            self._split_label(u"分区模式：开")
+    def _on_fast(self, args):
         if self.sys is not None:
-            self.sys.toggle_tick(self._tick_on)
-
-    def _on_chunk(self, args):
-        self._chunk_on = not self._chunk_on
-        self._chunk_label(u"分块模式：开" if self._chunk_on else u"分块模式：关")
-        if self.sys is not None:
-            self.sys.toggle_chunk(self._chunk_on)
-
-    def _on_map(self, args):
-        self._map_on = not self._map_on
-        self._map_label(u"地图画模式：开" if self._map_on else u"地图画模式：关")
-        if self.sys is not None:
-            self.sys.toggle_map(self._map_on)
-
-    def _on_turbo(self, args):
-        self._turbo_on = not self._turbo_on
-        self._turbo_label(u"急速模式：开" if self._turbo_on else u"急速模式：关")
-        if self.sys is not None:
-            self.sys.toggle_turbo(self._turbo_on)
-
-    def _on_thr(self, args):
-        self._thr_on = not self._thr_on
-        self._thr_label(u"并行加速：开" if self._thr_on else u"并行加速：关")
-        if self.sys is not None:
-            self.sys.toggle_threads(self._thr_on)
-
-    def _on_speed(self, args):
-        text = self._speed_get().strip()
-        try:
-            value = int(text)
-        except (TypeError, ValueError):
-            if self.sys is not None and self.sys.last_data:
-                self._speed_text(_u(self.sys.last_data.get("speed")))
-            return
-        value = max(1, min(10, value))
-        self._speed_text(_u(value))
-        if self.sys is not None:
-            self.sys.set_speed(value)
+            self.sys.run_fast()
 
     def _on_close(self, args):
         # 创建瞬间的伪触摸同样挡掉，避免设置页一开就关

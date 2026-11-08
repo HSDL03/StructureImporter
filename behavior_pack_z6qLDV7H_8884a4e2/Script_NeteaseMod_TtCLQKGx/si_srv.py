@@ -3267,6 +3267,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     speed = cfg.SPEED_DEFAULT
                 self.tick_speed = max(cfg.SPEED_MIN, min(cfg.SPEED_MAX, speed))
                 self._save()
+            if args.get("opt") is not None:
+                # 设置页每一行的 − / + ：key + delta，服务端统一夹到合法区间
+                try:
+                    delta = int(util.u(args.get("delta")) or 0)
+                except (TypeError, ValueError):
+                    delta = 0
+                self._apply_opt(util.u(args.get("opt")), delta)
             root = util.norm_path(args.get("root") or u"")
             if root and root != self.library.root:
                 if util.is_dir(root):
@@ -3290,6 +3297,83 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self.cmd_place(pid, which, rot)
         except Exception:
             util.log_exc("place req")
+
+    # ------------------------------------------------------------ 设置页的逐行加减
+    # 界面每一行就是一个参数：key + delta（−1 / +1），服务端负责夹到合法区间并存档
+    _OPT_INT = {
+        u"threads": ("threads", 1, 8),
+        u"parallel": ("parallel", 1, 4),
+        u"budget": ("budget", 2, 25),
+        u"mapspeed": ("map_speed", 0, 2),
+        u"znum": ("zones_n", 1, 9),
+        u"zwait": ("zone_secs", 1, 30),
+        u"freezetime": ("freeze_secs", 0, 60),
+        u"bigwait": ("big_wait", 1, 30),
+    }
+    _OPT_BOOL = {
+        u"split": "split",
+        u"tick": "tick_mode",
+        u"chunk": "chunk",
+        u"map": "map_mode",
+        u"turbo": "turbo",
+        u"freeze": "freeze",
+        u"maparea": "map_area",
+    }
+
+    def _apply_opt(self, key, delta):
+        if key == u"fast":
+            # 一键提速：和 /structureim fast 完全一样
+            self.threads = max(2, cfg.THREADS_DEFAULT)
+            self.parallel = max(3, cfg.PARALLEL_DEFAULT)
+            self.turbo = True
+            self.budget = cfg.WRITE_BUDGET_MS_TURBO
+            self._save()
+            return
+        if key == u"nbtlimit":
+            cur = int(self.nbt_limit or 0)
+            if delta > 0:
+                cur = 8 if cur < 8 else min(1024, cur + 8)
+            elif delta < 0:
+                cur = 0 if cur <= 8 else cur - 8
+            self.nbt_limit = cur
+            self._save()
+            return
+        if key in self._OPT_BOOL:
+            attr = self._OPT_BOOL[key]
+            value = bool(delta > 0) if delta else (not bool(getattr(self, attr)))
+            setattr(self, attr, value)
+            if key == u"tick" and value:
+                self.split = True          # 防缺失依赖分区
+            self._save()
+            return
+        item = self._OPT_INT.get(key)
+        if not item:
+            return
+        attr, lo, hi = item
+        cur = getattr(self, attr)
+        try:
+            cur = int(round(float(cur)))
+        except (TypeError, ValueError):
+            cur = lo
+        cur += 1 if delta > 0 else (-1 if delta < 0 else 0)
+        setattr(self, attr, max(lo, min(hi, cur)))
+        self._save()
+
+    def _opts_payload(self):
+        """设置页要显示的一堆数值（每一行一个）"""
+        return {
+            "freeze": 1 if self.freeze else 0,
+            "maparea": 1 if self.map_area else 0,
+            "threads": int(self.threads),
+            "parallel": int(self.parallel),
+            "budget": int(round(self.budget)),
+            "mapspeed": int(self.map_speed),
+            "znum": int(self.zones_n),
+            "zwait": int(round(self.zone_secs)),
+            "freezetime": int(round(self.freeze_secs)),
+            "bigwait": int(round(self.big_wait)),
+            "nbtlimit": int(self.nbt_limit or 0),
+        }
 
     def push(self, pid, page=0):
         if not pid:
@@ -3319,6 +3403,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             "split": bool(self.split),
             "tick": bool(self.tick_mode),
             "speed": int(self.tick_speed),
+            "opts": self._opts_payload(),
         }
         try:
             self.NotifyToClient(pid, cfg.EV_DATA, data)
