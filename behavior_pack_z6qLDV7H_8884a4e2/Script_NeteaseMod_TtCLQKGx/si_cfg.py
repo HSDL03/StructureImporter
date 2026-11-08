@@ -25,9 +25,9 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map", "wash",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast",
+               "nbtlimit", "mapspeed", "maparea", "turbo", "fast",
                "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
@@ -148,19 +148,6 @@ WAKE_SKIP = ("door", "gate", "rail", "bed", "tall_grass", "tallgrass",
              "sunflower", "lilac", "rose_bush", "peony", "vine", "ladder",
              "sign", "banner", "carpet", "snow_layer", "candle", "chain")
 
-# 液体冲刷校正：水放下去会冲掉一批"靠支撑站着"的方块（火把、拉杆、按钮、
-# 铁轨、告示牌、花、红石线…）。液体阶段结束后按原结构挨个核对一遍，
-# 少了就补回去（每个位置只补一次，且不触发邻居更新）。
-WASH_HINTS = (
-    "torch", "lantern", "lever", "button", "rail", "sign", "banner", "ladder",
-    "vine", "flower", "tulip", "paeonia", "allium", "cornflower", "dandelion",
-    "poppy", "blue_orchid", "azure_bluet", "oxeye", "lily", "rose", "sunflower",
-    "lilac", "peony", "sapling", "wheat", "carrot", "potato", "beetroot",
-    "sugar_cane", "bamboo", "kelp", "seagrass", "coral", "tripwire", "wire",
-    "repeater", "comparator", "string", "carpet", "snow_layer", "banner",
-    "candle", "chain", "pot", "skull", "head", "frame", "painting",
-)
-WASH_MAX_FIX = 800        # 一次导入最多补多少个被水冲掉的方块（防止无限补）
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
 
@@ -184,21 +171,11 @@ SKIP_BLOCKS = (
     "minecraft:fire_block", "minecraft:unknown", "minecraft:deny",
     "minecraft:allow", "minecraft:border_block", "minecraft:client_request_placeholder_block",
 )
-# 液体：单独排队到最后写（先放固体再放水，水才不会在方块没到位时到处流）
+# 液体：现在按普通方块写（不再单独排队到最后），这两个名字只用于统计/识别
 LIQUID_BLOCKS = ("minecraft:water", "minecraft:lava")
 # 支持含水的方块（states 里有 waterlogged 就自动带水）
 WATERLOG_KEYS = ("waterlogged",)
 
-# ---------------------------------------------------------------- 冻结（水不乱跑）
-# 导入期间把"时间流逝"按住：液体单独最后写入，写完再守若干秒把被引擎改动的水改回去；
-# 同时尽量关掉随机刻/昼夜/天气（只改能读到的游戏规则，结束时原样恢复）。
-FREEZE_DEFAULT = True     # 默认开启
-FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
-FREEZE_SECS_MAX = 60.0
-FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒
-FREEZE_CHECKS = 600       # 守液体时每 tick 最多巡检多少格（读比写便宜，先读后写）
-FREEZE_MAX_FIX = 3        # 同一格最多补写几次（补不进去说明它本来就该流走）
-FREEZE_FIX_CAP = 4000     # 累计补写超过这个数就提前收手（说明水在真流，越写越卡）回写
 
 # ---------------------------------------------------------------- 物品 NBT 安全阈值
 # 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，

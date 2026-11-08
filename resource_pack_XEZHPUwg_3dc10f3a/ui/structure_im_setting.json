@@ -788,7 +788,7 @@
             -238,
             8.0
         ],
-        "text": "冻结时间",
+        "text": "常加载形状",
         "color": [
             0.66,
             0.7,
@@ -926,7 +926,7 @@
             -238,
             32.0
         ],
-        "text": "常加载形状",
+        "text": "解析线程",
         "color": [
             0.66,
             0.7,
@@ -1064,7 +1064,7 @@
             -238,
             56.0
         ],
-        "text": "解析线程",
+        "text": "邻区并行",
         "color": [
             0.66,
             0.7,
@@ -1202,7 +1202,7 @@
             -238,
             80.0
         ],
-        "text": "邻区并行",
+        "text": "每tick预算",
         "color": [
             0.66,
             0.7,
@@ -1340,7 +1340,7 @@
             62,
             -112.0
         ],
-        "text": "每tick预算",
+        "text": "地图速度",
         "color": [
             0.66,
             0.7,
@@ -1478,7 +1478,7 @@
             62,
             -88.0
         ],
-        "text": "地图速度",
+        "text": "每幅巡区",
         "color": [
             0.66,
             0.7,
@@ -1616,7 +1616,7 @@
             62,
             -64.0
         ],
-        "text": "每幅巡区",
+        "text": "每区停留",
         "color": [
             0.66,
             0.7,
@@ -1754,7 +1754,7 @@
             62,
             -40.0
         ],
-        "text": "每区停留",
+        "text": "跨行降速",
         "color": [
             0.66,
             0.7,
@@ -1892,7 +1892,7 @@
             62,
             -16.0
         ],
-        "text": "守水秒数",
+        "text": "物品NBT",
         "color": [
             0.66,
             0.7,
@@ -2018,282 +2018,6 @@
         "hover_control": "hover",
         "pressed_control": "pressed"
     },
-    "si_r14_name": {
-        "type": "label",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "118px",
-            "18px"
-        ],
-        "offset": [
-            62,
-            8.0
-        ],
-        "text": "跨行降速",
-        "color": [
-            0.66,
-            0.7,
-            0.76
-        ],
-        "font_size": "normal",
-        "font_scale_factor": 0.62,
-        "text_alignment": "left",
-        "shadow": true,
-        "layer": 3
-    },
-    "si_r14_val": {
-        "type": "label",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "62px",
-            "18px"
-        ],
-        "offset": [
-            168,
-            8.0
-        ],
-        "text": "-",
-        "color": [
-            0.95,
-            0.95,
-            0.96
-        ],
-        "font_size": "normal",
-        "font_scale_factor": 0.64,
-        "text_alignment": "center",
-        "shadow": true,
-        "layer": 3
-    },
-    "si_r14_minus": {
-        "type": "button",
-        "size": [
-            "18px",
-            "18px"
-        ],
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "offset": [
-            216,
-            8.0
-        ],
-        "layer": 2,
-        "$control_alpha": 1.0,
-        "$label_color": [
-            0.92,
-            0.93,
-            0.95
-        ],
-        "$label_font_scale_factor": 0.62,
-        "$label_font_size": "normal",
-        "$label_layer": 3,
-        "$label_offset": [
-            0,
-            0
-        ],
-        "$label_text": "−",
-        "controls": [
-            {
-                "default@structure_im.si_spr_btn": {}
-            },
-            {
-                "hover@structure_im.si_spr_btn_hover": {}
-            },
-            {
-                "pressed@structure_im.si_spr_btn_press": {}
-            },
-            {
-                "button_label@netease_editor_template_namespace.button_label": {}
-            }
-        ],
-        "default_control": "default",
-        "hover_control": "hover",
-        "pressed_control": "pressed"
-    },
-    "si_r14_plus": {
-        "type": "button",
-        "size": [
-            "18px",
-            "18px"
-        ],
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "offset": [
-            240,
-            8.0
-        ],
-        "layer": 2,
-        "$control_alpha": 1.0,
-        "$label_color": [
-            0.92,
-            0.93,
-            0.95
-        ],
-        "$label_font_scale_factor": 0.62,
-        "$label_font_size": "normal",
-        "$label_layer": 3,
-        "$label_offset": [
-            0,
-            0
-        ],
-        "$label_text": "+",
-        "controls": [
-            {
-                "default@structure_im.si_spr_btn": {}
-            },
-            {
-                "hover@structure_im.si_spr_btn_hover": {}
-            },
-            {
-                "pressed@structure_im.si_spr_btn_press": {}
-            },
-            {
-                "button_label@netease_editor_template_namespace.button_label": {}
-            }
-        ],
-        "default_control": "default",
-        "hover_control": "hover",
-        "pressed_control": "pressed"
-    },
-    "si_r15_name": {
-        "type": "label",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "118px",
-            "18px"
-        ],
-        "offset": [
-            62,
-            32.0
-        ],
-        "text": "物品NBT",
-        "color": [
-            0.66,
-            0.7,
-            0.76
-        ],
-        "font_size": "normal",
-        "font_scale_factor": 0.62,
-        "text_alignment": "left",
-        "shadow": true,
-        "layer": 3
-    },
-    "si_r15_val": {
-        "type": "label",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "62px",
-            "18px"
-        ],
-        "offset": [
-            168,
-            32.0
-        ],
-        "text": "-",
-        "color": [
-            0.95,
-            0.95,
-            0.96
-        ],
-        "font_size": "normal",
-        "font_scale_factor": 0.64,
-        "text_alignment": "center",
-        "shadow": true,
-        "layer": 3
-    },
-    "si_r15_minus": {
-        "type": "button",
-        "size": [
-            "18px",
-            "18px"
-        ],
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "offset": [
-            216,
-            32.0
-        ],
-        "layer": 2,
-        "$control_alpha": 1.0,
-        "$label_color": [
-            0.92,
-            0.93,
-            0.95
-        ],
-        "$label_font_scale_factor": 0.62,
-        "$label_font_size": "normal",
-        "$label_layer": 3,
-        "$label_offset": [
-            0,
-            0
-        ],
-        "$label_text": "−",
-        "controls": [
-            {
-                "default@structure_im.si_spr_btn": {}
-            },
-            {
-                "hover@structure_im.si_spr_btn_hover": {}
-            },
-            {
-                "pressed@structure_im.si_spr_btn_press": {}
-            },
-            {
-                "button_label@netease_editor_template_namespace.button_label": {}
-            }
-        ],
-        "default_control": "default",
-        "hover_control": "hover",
-        "pressed_control": "pressed"
-    },
-    "si_r15_plus": {
-        "type": "button",
-        "size": [
-            "18px",
-            "18px"
-        ],
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "offset": [
-            240,
-            32.0
-        ],
-        "layer": 2,
-        "$control_alpha": 1.0,
-        "$label_color": [
-            0.92,
-            0.93,
-            0.95
-        ],
-        "$label_font_scale_factor": 0.62,
-        "$label_font_size": "normal",
-        "$label_layer": 3,
-        "$label_offset": [
-            0,
-            0
-        ],
-        "$label_text": "+",
-        "controls": [
-            {
-                "default@structure_im.si_spr_btn": {}
-            },
-            {
-                "hover@structure_im.si_spr_btn_hover": {}
-            },
-            {
-                "pressed@structure_im.si_spr_btn_press": {}
-            },
-            {
-                "button_label@netease_editor_template_namespace.button_label": {}
-            }
-        ],
-        "default_control": "default",
-        "hover_control": "hover",
-        "pressed_control": "pressed"
-    },
     "si_fast_btn": {
         "type": "button",
         "size": [
@@ -2304,7 +2028,7 @@
         "anchor_to": "center",
         "offset": [
             150,
-            54.0
+            6.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -2557,30 +2281,6 @@
             },
             {
                 "si_r13_plus@structure_im_set.si_r13_plus": {}
-            },
-            {
-                "si_r14_name@structure_im_set.si_r14_name": {}
-            },
-            {
-                "si_r14_val@structure_im_set.si_r14_val": {}
-            },
-            {
-                "si_r14_minus@structure_im_set.si_r14_minus": {}
-            },
-            {
-                "si_r14_plus@structure_im_set.si_r14_plus": {}
-            },
-            {
-                "si_r15_name@structure_im_set.si_r15_name": {}
-            },
-            {
-                "si_r15_val@structure_im_set.si_r15_val": {}
-            },
-            {
-                "si_r15_minus@structure_im_set.si_r15_minus": {}
-            },
-            {
-                "si_r15_plus@structure_im_set.si_r15_plus": {}
             },
             {
                 "si_fast_btn@structure_im_set.si_fast_btn": {}

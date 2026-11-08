@@ -21,10 +21,8 @@
                 "test",
                 "split",
                 "map",
-                "wash",
                 "manual",
                 "help2",
-                "freeze",
                 "turbo",
                 "fast",
                 "maparea"
@@ -55,7 +53,6 @@
                 "threads",
                 "parallel",
                 "nbtlimit",
-                "freezetime",
                 "mapspeed"
             ]
         },

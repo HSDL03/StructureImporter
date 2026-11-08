@@ -256,7 +256,6 @@ SET_ROWS = [
     ("chunk",      u"分块模式",   "bool"),
     ("map",        u"地图画模式", "bool"),
     ("turbo",      u"急速模式",   "bool"),
-    ("freeze",     u"冻结时间",   "bool"),
     ("maparea",    u"常加载形状", "maparea"),
     ("threads",    u"解析线程",   "int"),
     ("parallel",   u"邻区并行",   "int"),
@@ -264,7 +263,6 @@ SET_ROWS = [
     ("mapspeed",   u"地图速度",   "mapspeed"),
     ("znum",       u"每幅巡区",   "zone"),
     ("zwait",      u"每区停留",   "sec"),
-    ("freezetime", u"守水秒数",   "sec"),
     ("bigwait",    u"跨行降速",   "sec"),
     ("nbtlimit",   u"物品NBT",    "kb"),
 ]
