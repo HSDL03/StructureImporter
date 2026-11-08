@@ -502,7 +502,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 pct, job.liq_cursor, n, speed)
         elif job.phase == "seal":
             left = max(0, job.seal_until - job.tick) / 20.0
-            text = u"§3❄ 结构导入 §f冻结中 §7· §9锁水 %d 格 §7· 剩 %.0fs" % (
+            text = u"§3■ 结构导入 §f冻结中 §7· §9锁水 %d 格 §7· 剩 %.0fs" % (
                 len(job.sealed), left)
         else:
             phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
