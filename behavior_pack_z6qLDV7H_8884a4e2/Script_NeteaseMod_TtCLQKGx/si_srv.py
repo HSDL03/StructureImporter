@@ -1707,6 +1707,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             util.log_exc("map prefetch")
 
+    def _map_abort(self, why):
+        """地图阶段出问题时统一收场：能救的图塞回背包，队列清空，别卡在这"""
+        q = self.map_queue
+        pid = q.get("pid") if q else None
+        try:
+            for _k, _it in ((q or {}).get("maps") or []):
+                self._map_to_inv(pid, _it)
+        except Exception:
+            util.log_exc("map abort inv")
+        self.map_queue = None
+        self._map_cd = 0
+        if pid:
+            self.tell(pid, why)
+
     def _give_maps(self):
         """逐张：TP 到单元中心 -> 等区块加载 -> /give 生成地图 -> 取走挂到墙上"""
         q = self.map_queue
@@ -1714,6 +1728,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if self._map_cd > 0:
             return
         pid = q["pid"]
+        # 阶段路标：正常只该在阶段切换时打一行，崩了能看出卡在哪一步
+        _st = q.get("stage")
+        if _st != getattr(self, "_map_stage_last", None):
+            self._map_stage_last = _st
+            util.log(u"map[%s] 第 %d/%d 张" %
+                     (util.u(_st), int(q.get("i") or 0) + 1, int(q.get("n") or 0)))
         try:
             if q["stage"] == "wall":
                 # 单独一个 tick 搭墙（离开刚导完的那一堆方块更新）
@@ -2289,10 +2309,24 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self._poll_bg()
                 return
             if self.map_queue:
-                self._give_maps()
+                # 地图阶段以前裸跑在 try 外面：这里一抛异常就直接冲到引擎，
+                # 日志里只剩"搭好墙"然后世界没了，看不出是谁崩的。包一层，
+                # 出错就放弃挂画并把图塞回背包，同时把真实原因打出来。
+                try:
+                    self._give_maps()
+                except Exception:
+                    tb = traceback.format_exc()
+                    util.log(u"map 异常\n" + util.u(tb))
+                    self._map_abort(u"地图阶段异常：§f" +
+                                    util.short(util.u(tb.strip().splitlines()[-1]), 40))
             if self.replay_cmds:
                 self._replay_cmds()
             return
+        if job.tick % 200 == 0:
+            # 每 10 秒一条路标：崩了以后能看出停在哪个阶段
+            util.log(u"tick t=%d phase=%s ok=%d fail=%d sec=%d/%d" %
+                     (job.tick, job.phase, job.ok, job.fail, job.sec_i,
+                      len(job.sections)))
         try:
             if job.paused:
                 # 暂停时也保持 tip 心跳，让玩家知道任务还活着
