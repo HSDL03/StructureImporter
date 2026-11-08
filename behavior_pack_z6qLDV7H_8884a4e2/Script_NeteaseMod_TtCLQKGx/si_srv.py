@@ -1451,11 +1451,21 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                               "anchor": (cx0, cz0), "ta": None})
 
         # ---- 玩家面前搭地图墙
+        self._wall_frames = 0
         built = self._build_map_wall(job.pid, cols, rows)
-        frames, wall_info = (built if built else ([None] * n, None))
         if built is None:
-            self.tell(job.pid, u"§c地图墙搭建失败§7（%s），地图改为放进你的背包" %
+            self.tell(job.pid, u"§c地图墙搭建失败§7（%s），这次不画地图了（地图没墙可挂，画了也是白图）" %
                       util.short(util.u(getattr(self, "_wall_err", u"") or u"未知原因"), 40))
+            return
+        frames, wall_info = built
+        ok_frames = len([f for f in frames if f])
+        if ok_frames == 0:
+            self.tell(job.pid, u"§c地图墙一个展示框都没放上去§7（目标位置被占 / 这个版本认不到展示框），"
+                               u"已跳过挂画。换个空地朝墙的方向再试")
+            return
+        if ok_frames < n:
+            self.tell(job.pid, u"§e只放上 §f%d/%d §e个展示框，多出来的地图会直接放进背包" %
+                      (ok_frames, n))
         self.map_queue = {"pid": job.pid, "title": util.short(
             util.u(job.title), 20), "cells": cells, "i": 0, "n": n,
             "cols": cols, "rows": rows, "frames": frames, "stage": "zone",
@@ -1499,6 +1509,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if bi is None:
                 return None
             frames = [None] * (cols * rows)
+            placed = 0
             for r in range(rows):               # r=0 顶行
                 for c in range(cols):
                     fc = c - (cols - 1) // 2
@@ -1506,9 +1517,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     fp = (ax + pv[0] * fc, ay + fr, az + pv[2] * fc)
                     sp = (fp[0] + v[0], fp[1] + v[1], fp[2] + v[2])
                     bi.SetBlockNew(sp, {"name": "minecraft:polished_andesite", "aux": 0}, 0, 0, True, False)
-                    if bi.SetBlockNew(fp, {"name": "minecraft:frame",
-                                           "aux": self._MAP_FACE[view]}, 0, 0, True, False):
+                    # 展示框：不同版本 id 不一样（frame / item_frame），两个都试
+                    ok = False
+                    for fname in (u"minecraft:frame", u"minecraft:item_frame"):
+                        try:
+                            if bi.SetBlockNew(fp, {"name": fname,
+                                                   "aux": self._MAP_FACE[view]}, 0, 0, True, False):
+                                ok = True
+                                break
+                        except Exception:
+                            continue
+                    if ok:
                         frames[r * cols + c] = fp
+                        placed += 1
+            self._wall_frames = placed
             # 观景位：墙中心前方 8 格（玩家站这里时整面墙区块都是加载的）
             view_pos = (ax - v[0] * 8, ay + rows / 2.0, az - v[2] * 8)
             return frames, view_pos
@@ -1588,10 +1610,29 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         return ok
 
     def _map_to_inv(self, pid, item):
-        """把一张地图直接塞进玩家背包（墙没搭成时的兜底，别把图弄丢）"""
+        """把一张地图塞进玩家背包（墙没搭成时的兜底）
+
+        坑：GetPlayerAllItems 给的是 newItemName/newAuxValue 风格，
+        SpawnItemToPlayerInv 要的是 itemName/count/auxValue 风格；
+        直接原样塞会报 "spawn item dict to inv failed"（实测）。
+        """
+        d = dict(item or {})
+        name = d.get("itemName") or d.get("newItemName") or u"minecraft:filled_map"
+        try:
+            cnt = int(d.get("count") or 1)
+        except (TypeError, ValueError):
+            cnt = 1
+        try:
+            aux = int(d.get("auxValue", d.get("newAuxValue", 0)) or 0)
+        except (TypeError, ValueError):
+            aux = 0
+        payload = {"itemName": name, "count": max(1, cnt), "auxValue": aux}
+        ud = d.get("userData")
+        if isinstance(ud, dict) and ud:
+            payload["userData"] = ud
         try:
             it = self.factory.CreateItem(pid)
-            if it.SpawnItemToPlayerInv(dict(item), pid):
+            if it.SpawnItemToPlayerInv(payload, pid):
                 return True
         except Exception:
             util.log_exc("map to inv")
@@ -1722,7 +1763,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 mu, slot, mapd = found
                 try:
                     it = self.factory.CreateItem(pid)
-                    sel = it.GetSelectSlotId()
+                    # 主手槽号：优先问引擎，问不到就用地图实际落到的那个槽
+                    try:
+                        sel = int(it.GetSelectSlotId())
+                    except Exception:
+                        sel = int(slot or 0)
                     items = it.GetPlayerAllItems(0, True) or []
                     q["restore"] = dict(items[sel]) if sel < len(items) and items[sel] else {}
                     it.SetPlayerAllItems({(0, sel): mapd})
@@ -1731,8 +1776,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     q["stage"] = "patrol"
                     self._map_cd = self._map_hold()
                 except Exception:
-                    util.log_exc("equip map")
+                    tb = traceback.format_exc()
+                    util.log(u"equip map\n" + util.u(tb))
                     q["map_uuid"] = mu
+                    q["hold_slot"] = slot
                     q["stage"] = "grab"
                     self._map_cd = 1
                 return
