@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""结构导入器 · Mod 入口"""
+"""结构导入器 · Mod 入口
+
+注意（踩过的坑）：这里**不要** `from ... import si_cfg as cfg` 这种把模块对象
+绑进 modMain 命名空间的写法。引擎的 ImportModMain 会遍历 modMain 模块的
+命名空间，把任何带 MOD_NAME 属性的对象当成 Mod 类去实例化；si_cfg 里正好
+定义了 MOD_NAME，模块对象不可调用 → 日志刷
+`TypeError: 'module' object is not callable`（引擎已知 bug，无异常捕获）。
+所以下面只按名字导入需要的常量。
+"""
 
 import os
 import sys
@@ -21,28 +29,13 @@ except Exception:
 import mod.server.extraServerApi as serverApi
 import mod.client.extraClientApi as clientApi
 
-from Script_NeteaseMod_TtCLQKGx import si_cfg as cfg
+from Script_NeteaseMod_TtCLQKGx.si_cfg import (
+    MOD_NAME, SERVER_SYSTEM_NAME, SERVER_CLS,
+    CLIENT_SYSTEM_NAME, CLIENT_CLS,
+)
 
 
-def _bind_debug_bridge(api, side):
-    """把调试桥挂到同一套 Mod 上：它用自己的命名空间注册系统，和我们互不影响"""
-    if not cfg.DEBUG_BRIDGE:
-        return
-    try:
-        if side == "server":
-            api.RegisterSystem(cfg.DEBUG_BRIDGE_NS,
-                               cfg.DEBUG_BRIDGE_SERVER_NAME,
-                               cfg.DEBUG_BRIDGE_SERVER)
-        else:
-            api.RegisterSystem(cfg.DEBUG_BRIDGE_NS,
-                               cfg.DEBUG_BRIDGE_CLIENT_NAME,
-                               cfg.DEBUG_BRIDGE_CLIENT)
-    except Exception:
-        import traceback
-        print("[StructureIm] debug bridge 注册失败:\n" + traceback.format_exc())
-
-
-@Mod.Binding(name=cfg.MOD_NAME, version="1.0.0")
+@Mod.Binding(name=MOD_NAME, version="1.0.0")
 class StructureImMod(object):
 
     def __init__(self):
@@ -50,8 +43,7 @@ class StructureImMod(object):
 
     @Mod.InitServer()
     def on_server_init(self):
-        serverApi.RegisterSystem(cfg.MOD_NAME, cfg.SERVER_SYSTEM_NAME, cfg.SERVER_CLS)
-        _bind_debug_bridge(serverApi, "server")
+        serverApi.RegisterSystem(MOD_NAME, SERVER_SYSTEM_NAME, SERVER_CLS)
 
     @Mod.DestroyServer()
     def on_server_destroy(self):
@@ -59,15 +51,8 @@ class StructureImMod(object):
 
     @Mod.InitClient()
     def on_client_init(self):
-        clientApi.RegisterSystem(cfg.MOD_NAME, cfg.CLIENT_SYSTEM_NAME, cfg.CLIENT_CLS)
-        _bind_debug_bridge(clientApi, "client")
+        clientApi.RegisterSystem(MOD_NAME, CLIENT_SYSTEM_NAME, CLIENT_CLS)
 
     @Mod.DestroyClient()
     def on_client_destroy(self):
         pass
-
-
-# 引擎 ImportModMain 会在 modMain 模块/包上找名为 modMain 的可调用入口并实例化；
-# 缺了这个别名它会拿到"子模块对象"去调用，日志里报
-# TypeError: 'module' object is not callable（不影响功能，但难看）。类实例化无副作用。
-modMain = StructureImMod

@@ -28,8 +28,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -140.0,
-            -32.0
+            -85.0,
+            -40.0
         ],
         "size": [
             "170px",
@@ -59,11 +59,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            20.0,
-            -32.0
+            85.0,
+            -40.0
         ],
         "size": [
-            "220px",
+            "160px",
             "24px"
         ],
         "layer": 3,
@@ -84,10 +84,10 @@
         "anchor_to": "center",
         "offset": [
             0,
-            118.0
+            104.0
         ],
         "size": [
-            "396px",
+            "400px",
             "14px"
         ],
         "layer": 3,
@@ -121,8 +121,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -140.0,
-            2.0
+            -85.0,
+            -8.0
         ],
         "size": [
             "170px",
@@ -152,11 +152,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            20.0,
-            2.0
+            85.0,
+            -8.0
         ],
         "size": [
-            "220px",
+            "160px",
             "24px"
         ],
         "layer": 3,
@@ -190,8 +190,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            188,
-            -107.0
+            212.0,
+            -132.0
         ],
         "size": [
             "20px",
@@ -232,9 +232,6 @@
         "clips_children": false,
         "controls": [
             {
-                "set_solid@structure_im_set.set_solid": {}
-            },
-            {
                 "set_bg@structure_im_set.set_bg": {}
             },
             {
@@ -257,9 +254,6 @@
             },
             {
                 "si_tick_desc@structure_im_set.si_tick_desc": {}
-            },
-            {
-                "si_tick_desc2@structure_im_set.si_tick_desc2": {}
             },
             {
                 "si_chunk_btn@structure_im_set.si_chunk_btn": {}
@@ -299,11 +293,11 @@
         "anchor_to": "center",
         "offset": [
             0,
-            -107.0
+            -132.0
         ],
         "size": [
-            "396px",
-            "16px"
+            "400px",
+            "18px"
         ],
         "layer": 3,
         "color": [
@@ -336,8 +330,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            60.0,
-            78.0
+            86.0,
+            62.0
         ],
         "size": [
             "80px",
@@ -367,12 +361,12 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -160.0,
-            78.0
+            -120.0,
+            62.0
         ],
         "size": [
-            "150px",
-            "16px"
+            "120px",
+            "18px"
         ],
         "layer": 3,
         "color": [
@@ -423,11 +417,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -30.0,
-            78.0
+            0.0,
+            62.0
         ],
         "size": [
-            "80px",
+            "70px",
             "22px"
         ],
         "layer": 4,
@@ -456,8 +450,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -140.0,
-            -100.0
+            -85.0,
+            -104.0
         ],
         "size": [
             "170px",
@@ -487,11 +481,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            20.0,
-            -100.0
+            85.0,
+            -104.0
         ],
         "size": [
-            "220px",
+            "160px",
             "24px"
         ],
         "layer": 3,
@@ -525,8 +519,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -140.0,
-            -66.0
+            -85.0,
+            -72.0
         ],
         "size": [
             "170px",
@@ -556,11 +550,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            20.0,
-            -66.0
+            85.0,
+            -72.0
         ],
         "size": [
-            "220px",
+            "160px",
             "24px"
         ],
         "layer": 3,
@@ -573,30 +567,6 @@
         "font_size": "normal",
         "shadow": true,
         "text": "请确保存档至少有一个常加载空位（开启后导入将会变慢）\n开启后会自动打开分区模式，并为每个分区临时添加常加载区块",
-        "text_alignment": "center"
-    },
-    "si_tick_desc2": {
-        "type": "label",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "offset": [
-            -90,
-            -46.0
-        ],
-        "size": [
-            "400px",
-            "14px"
-        ],
-        "layer": 3,
-        "color": [
-            0.66,
-            0.7,
-            0.76
-        ],
-        "font_scale_factor": 0.64,
-        "font_size": "normal",
-        "shadow": true,
-        "text": "完成后常加载区块会自动移除",
         "text_alignment": "center"
     },
     "si_turbo_btn": {
@@ -618,8 +588,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -140.0,
-            36.0
+            -85.0,
+            24.0
         ],
         "size": [
             "170px",
@@ -649,11 +619,11 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            20.0,
-            36.0
+            85.0,
+            24.0
         ],
         "size": [
-            "220px",
+            "160px",
             "24px"
         ],
         "layer": 3,
@@ -667,22 +637,6 @@
         "shadow": true,
         "text": "分区等待降到 1 tick，最快但有卡顿风险",
         "text_alignment": "left"
-    },
-    "set_solid": {
-        "type": "image",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "100%",
-            "100%"
-        ],
-        "offset": [
-            0,
-            0
-        ],
-        "texture": "textures/ui/si_solid",
-        "alpha": 1.0,
-        "layer": 0
     },
     "set_bg": {
         "type": "image",

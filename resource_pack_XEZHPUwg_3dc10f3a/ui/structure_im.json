@@ -25,9 +25,6 @@
         "clips_children": false,
         "controls": [
             {
-                "si_solid@structure_im.si_solid": {}
-            },
-            {
                 "si_bg@structure_im.si_bg": {}
             },
             {
@@ -83,29 +80,13 @@
             }
         ]
     },
-    "si_solid": {
-        "type": "image",
-        "anchor_from": "center",
-        "anchor_to": "center",
-        "size": [
-            "420px",
-            "250px"
-        ],
-        "offset": [
-            0,
-            0
-        ],
-        "texture": "textures/ui/si_solid",
-        "alpha": 1.0,
-        "layer": 0
-    },
     "si_bg": {
         "type": "image",
         "anchor_from": "center",
         "anchor_to": "center",
         "size": [
-            "420px",
-            "250px"
+            "440px",
+            "270px"
         ],
         "offset": [
             0,
@@ -121,12 +102,12 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "size": [
-            "176px",
-            "3px"
+            "200px",
+            "2px"
         ],
         "offset": [
             0,
-            -92.0
+            -100.0
         ],
         "texture": "textures/ui/si_accent",
         "layer": 2
@@ -136,12 +117,12 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "size": [
-            "396px",
-            "16px"
+            "300px",
+            "18px"
         ],
         "offset": [
             0,
-            -107.0
+            -118.0
         ],
         "text": "结构导入器",
         "color": [
@@ -164,8 +145,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            188.0,
-            -107.0
+            200.0,
+            -118.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -229,12 +210,12 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -71,
-            -72.0
+            -77,
+            -74.0
         ],
         "size": [
-            "250px",
-            "24px"
+            "256px",
+            "26px"
         ],
         "layer": 4,
         "enabled": true,
@@ -272,14 +253,14 @@
     "si_apply": {
         "type": "button",
         "size": [
-            "134px",
-            "24px"
+            "150px",
+            "26px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            129,
-            -72.0
+            133,
+            -74.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -319,12 +300,12 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "size": [
-            "396px",
-            "16px"
+            "400px",
+            "18px"
         ],
         "offset": [
             0,
-            -46.0
+            -44.0
         ],
         "text": "载入中…",
         "color": [
@@ -341,14 +322,14 @@
     "si_row0": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            -23.0
+            -22.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -386,14 +367,14 @@
     "si_row1": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            -1.0
+            2.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -431,14 +412,14 @@
     "si_row2": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            21.0
+            26.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -476,14 +457,14 @@
     "si_row3": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            43.0
+            50.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -521,14 +502,14 @@
     "si_row4": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            65.0
+            74.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -566,14 +547,14 @@
     "si_row5": {
         "type": "button",
         "size": [
-            "392px",
+            "400px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
             0,
-            87.0
+            98.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -611,14 +592,14 @@
     "si_prev": {
         "type": "button",
         "size": [
-            "96px",
+            "92px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -147,
-            111.0
+            -153,
+            120.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -656,14 +637,14 @@
     "si_next": {
         "type": "button",
         "size": [
-            "96px",
+            "92px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -49,
-            111.0
+            -51,
+            120.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -701,14 +682,14 @@
     "si_rescan": {
         "type": "button",
         "size": [
-            "96px",
+            "92px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            49,
-            111.0
+            51,
+            120.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -854,14 +835,14 @@
     "si_split": {
         "type": "button",
         "size": [
-            "96px",
+            "92px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            147,
-            111.0
+            153,
+            120.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -899,14 +880,14 @@
     "si_setting": {
         "type": "button",
         "size": [
-            "40px",
+            "44px",
             "20px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            -188,
-            -107.0
+            -194,
+            -118.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
