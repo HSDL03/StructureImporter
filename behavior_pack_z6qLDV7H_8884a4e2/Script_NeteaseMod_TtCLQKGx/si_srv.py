@@ -1691,9 +1691,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 found = self._find_new_map(pid)
                 if found is None:
                     q["retry"] += 1
-                    if q["retry"] <= 3:
+                    # 极速档只等 4 tick，背包同步慢一点就会漏；重试逐步拉长间隔
+                    if q["retry"] <= 5:
                         q["stage"] = "give2"
-                        self._map_cd = 10
+                        self._map_cd = 6 + 4 * q["retry"]
                         return
                     self.tell(pid, u"§c第 %d 张地图生成失败，跳过" % q["cells"][q["i"]]["k"])
                     self._map_ta_del(q, q["i"])
