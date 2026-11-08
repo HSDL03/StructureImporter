@@ -252,6 +252,7 @@ class SiScreen(ScreenNode):
 # 顺序与 resource_pack/.../ui/structure_im_setting.json 的 si_r0..si_r15 一一对应
 SET_ROWS = [
     ("split",      u"分区模式",   "bool"),
+    ("splitz",     u"分区边长",   "splitz"),
     ("tick",       u"防缺失",     "bool"),
     ("chunk",      u"分块模式",   "bool"),
     ("map",        u"地图画模式", "bool"),
@@ -280,6 +281,8 @@ def _opt_text(kind, value):
         return u"§a开" if v else u"§7关"
     if kind == "maparea":
         return u"方形" if v else u"圆形"
+    if kind == "splitz":
+        return u"自动" if v <= 0 else u"%d 格" % v
     if kind == "mapspeed":
         return [u"稳", u"快", u"极速"][max(0, min(2, v))]
     if kind == "ms":

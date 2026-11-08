@@ -229,6 +229,7 @@ HELP = [
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
+    u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
     u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
@@ -350,6 +351,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.library = scan.Library()
         self.job = None
         self.split = cfg.SPLIT_DEFAULT
+        self.split_size = 0                    # 分区边长：0=自动（按体量自适应），>0=自定义格数
         self.tick_mode = cfg.TICK_DEFAULT
         self.tick_speed = cfg.SPEED_DEFAULT
         self.chunk = cfg.CHUNK_DEFAULT
@@ -567,6 +569,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _load(self):
         path = u""
         self.split = cfg.SPLIT_DEFAULT
+        self.split_size = 0                    # 分区边长：0=自动（按体量自适应），>0=自定义格数
         self.tick_mode = cfg.TICK_DEFAULT
         self.tick_speed = cfg.SPEED_DEFAULT
         self.chunk = cfg.CHUNK_DEFAULT
@@ -600,6 +603,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 flag = util.u(raw.get("split")).strip()
                 if flag:
                     self.split = flag == u"1"
+                if raw.get("splitz") is not None:
+                    try:
+                        self.split_size = max(0, min(int(cfg.SPLIT_SIZE_MAX),
+                                                     int(util.u(raw.get("splitz")))))
+                    except (TypeError, ValueError):
+                        pass
                 tflag = util.u(raw.get("tick")).strip()
                 if tflag:
                     self.tick_mode = tflag == u"1"
@@ -690,6 +699,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 str(cfg.EXTRA_KEY),
                 {"dir": util.b(self.library.root),
                  "split": util.b(u"1" if self.split else u"0"),
+                 "splitz": util.b(str(int(getattr(self, "split_size", 0)))),
                  "tick": util.b(u"1" if self.tick_mode else u"0"),
                  "speed": util.b(str(self.tick_speed)),
                  "chunk": util.b(u"1" if self.chunk else u"0"),
@@ -849,6 +859,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
+        elif action in (u"splitz", u"sidesz", u"side"):
+            self.cmd_splitz(pid, a1)
         elif action == u"fast":
             self.cmd_fast(pid, a1)
         elif action in (u"ta", u"tacover"):
@@ -907,6 +919,25 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         for i in range(start, min(start + cfg.ROWS, len(lib.entries))):
             self.tell(pid, u"§7%d. §f%s" % (i + 1, util.short(lib.entries[i].rel, 40)))
 
+    def cmd_splitz(self, pid, text):
+        """分区边长：0 = 自动按体量自适应；16~128 = 自定义固定边长"""
+        t = util.u(text).strip()
+        try:
+            v = int(t)
+        except ValueError:
+            v = -1
+        if v < 0:
+            cur = int(getattr(self, "split_size", 0) or 0)
+            self.tell(pid, u"§e用法：/structureim splitz <0|16-128> §7当前 %s" %
+                      (u"自动" if cur <= 0 else u"%d 格" % cur))
+            self.tell(pid, u"§7自动=按结构体量挑边长（大平面会自动放大到最多 %d 格）" %
+                      cfg.SPLIT_SIZE_MAX)
+            return
+        self.split_size = max(0, min(int(cfg.SPLIT_SIZE_MAX), v))
+        self._save()
+        self.tell(pid, u"§a分区边长：§f%s" %
+                  (u"自动" if self.split_size == 0 else u"%d 格" % self.split_size))
+
     def cmd_split(self, pid, text):
         t = util.u(text).strip().lower()
         if t in (u"", u"toggle", u"switch"):
@@ -919,8 +950,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§e用法：/structureim split <开/关>")
             return
         self._save()
-        self.tell(pid, u"§a分区导入：§f%s §7（每区 %d 格）" %
-                  (u"开" if self.split else u"关", cfg.SPLIT_SIZE))
+        sz = int(getattr(self, "split_size", 0) or 0)
+        self.tell(pid, u"§a分区导入：§f%s §7（每区 %s）" %
+                  (u"开" if self.split else u"关",
+                   u"%d 格" % sz if sz > 0 else u"自动边长"))
         self.push(pid, self._page)
 
     def cmd_mapmode(self, pid, text):
@@ -2089,7 +2122,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         768×768 的单层平面按 16×16 切 = 2304 个区、每区 256 块：写完 256 块只要
         几毫秒，却要花几十 tick 等区块、TP、预取——时间全耗在换区上。
         这里按"每区大约 SECTION_TARGET 块"反推边长，分区数能掉两个数量级。
+        split_size > 0 时是用户自定义边长，直接用（夹在 16 与上限之间）。
         """
+        custom = int(getattr(self, "split_size", 0) or 0)
+        if custom > 0:
+            return max(int(cfg.SPLIT_SIZE), min(int(cfg.SPLIT_SIZE_MAX), custom))
         if not cfg.SPLIT_AUTO or not blocks:
             return max(1, int(cfg.SPLIT_SIZE))
         n = len(blocks)
@@ -3590,6 +3627,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self.split = True          # 防缺失依赖分区
             self._save()
             return
+        if key == u"splitz":
+            cur = int(getattr(self, "split_size", 0) or 0)
+            if delta > 0:
+                cur = 16 if cur < 16 else min(int(cfg.SPLIT_SIZE_MAX), cur + 16)
+            elif delta < 0:
+                cur = 0 if cur <= 16 else cur - 16
+            self.split_size = cur
+            self._save()
+            return
         item = self._OPT_INT.get(key)
         if not item:
             return
@@ -3606,6 +3652,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _opts_payload(self):
         """设置页要显示的一堆数值（每一行一个）"""
         return {
+            "splitz": int(getattr(self, "split_size", 0) or 0),
             "ta": 1 if self.ta_mode else 0,
             "freeze": 1 if self.freeze else 0,
             "maparea": 1 if self.map_area else 0,
