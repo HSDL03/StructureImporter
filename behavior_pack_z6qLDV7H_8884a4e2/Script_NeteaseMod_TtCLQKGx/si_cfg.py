@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "turbo", "fast",
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast",
                "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
@@ -98,6 +98,7 @@ MAP_GIVE_WAIT = 40        # 发地图：TP 到单元中心后等多少 tick 再 
 MAP_HOLD_SECS = 4          # 地图放进玩家主手停留几秒让引擎渲染地形（否则挂墙是空白图）
 MAP_TA_RADIUS = 4          # 旧版圆形常加载半径（已改用方形 _map_ta_add，仅留作对照）
 MAP_TA_WAIT = 60           # 常加载区块挂上后等多少 tick 让区块真正加载完再 give
+MAP_AREA_SQUARE = True     # 常加载形状：True 方形（一次盖住整幅）/ False 圆形（老写法，兼容用）
 
 # ---------------------------------------------------------------- 地图画速度档
 # 慢的根源：每张图都要「挂常加载 -> 等 3 秒 -> TP 九个区、每区停 3 秒 -> 拿图 4 秒」。

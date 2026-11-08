@@ -202,7 +202,8 @@ HELP = [
     u"§f/structureim split <开|关> §7分区导入开关",
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
-    u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳 1快(默认) 2极速",
+    u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳 1快 2极速(默认)",
+    u"§f/structureim maparea <square|circle> §7地图常加载形状（方形默认；报命令错就切 circle）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
@@ -553,6 +554,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._skipped = 0                    # 上一次整理时跳过的运行时方块数
         self._liquid_idx = []                # 上一次切分区时挑出来的液体索引
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
+        self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
@@ -627,6 +629,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.map_speed = max(0, min(2, ms))
                 except (TypeError, ValueError):
                     pass
+                if raw.get("maparea") is not None:
+                    self.map_area = util.u(raw.get("maparea")) != u"0"
             elif raw:
                 path = util.u(raw)
         except Exception:
@@ -657,6 +661,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "freeze": util.b(u"1" if self.freeze else u"0"),
                  "freezesecs": util.b(str(self.freeze_secs)),
                  "mapspeed": util.b(str(self.map_speed)),
+                 "maparea": util.b(u"1" if self.map_area else u"0"),
                  "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
             util.log_exc("save config")
@@ -793,6 +798,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_freezetime(pid, a1)
         elif action in (u"mapspeed", u"mapspd", u"mspeed"):
             self.cmd_mapspeed(pid, a1)
+        elif action in (u"maparea", u"marea"):
+            self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
         elif action == u"fast":
@@ -1082,6 +1089,29 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§7还能更快：§fznum 1 §7（方形常加载已盖住整幅，理论上一个点就够）")
             if self.map_speed == 2:
                 self.tell(pid, u"§7极速档如果出现缺角/空白，改回 §f1 §7或把 §fznum §7调大")
+
+    def cmd_maparea(self, pid, text):
+        """常加载形状：square（默认，盖满整幅）/ circle（老写法，兼容用）
+
+        如果你的版本不认方形 tickingarea（聊天框报命令语法错），就切 circle。
+        """
+        t = (text or u"").strip().lower()
+        if not t:
+            self.tell(pid, u"§e用法：/structureim maparea <square|circle> §7当前 §f%s" %
+                      (u"square 方形" if self.map_area else u"circle 圆形"))
+            return
+        if t in (u"square", u"1", u"方", u"方形"):
+            self.map_area = True
+        elif t in (u"circle", u"0", u"圆", u"圆形"):
+            self.map_area = False
+        else:
+            self.tell(pid, u"§c只认 square / circle")
+            return
+        self._save()
+        if self.map_area:
+            self.tell(pid, u"§a常加载改成 §f方形§a：一次盖住整幅 128×128，巡逻点可以少")
+        else:
+            self.tell(pid, u"§a常加载改成 §f圆形§a（老写法）：四角盖不到，要把 §fznum §a调大（如 5~9）")
 
     def cmd_znum(self, pid, text):
         try:
@@ -1409,7 +1439,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         built = self._build_map_wall(job.pid, cols, rows)
         frames, wall_info = (built if built else ([None] * n, None))
         if built is None:
-            self.tell(job.pid, u"§c地图墙搭建失败，改为发放到背包")
+            self.tell(job.pid, u"§c地图墙搭建失败§7（%s），地图改为放进你的背包" %
+                      util.short(util.u(getattr(self, "_wall_err", u"") or u"未知原因"), 40))
         self.map_queue = {"pid": job.pid, "title": util.short(
             util.u(job.title), 20), "cells": cells, "i": 0, "n": n,
             "cols": cols, "rows": rows, "frames": frames, "stage": "zone",
@@ -1467,7 +1498,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             view_pos = (ax - v[0] * 8, ay + rows / 2.0, az - v[2] * 8)
             return frames, view_pos
         except Exception:
-            util.log_exc("build map wall")
+            tb = traceback.format_exc()
+            util.log(u"地图墙异常\n" + util.u(tb))
+            try:
+                self._wall_err = util.u(tb.strip().splitlines()[-1])
+            except Exception:
+                self._wall_err = u""
             return None
 
     # ---- 速度档取等待时间
@@ -1520,14 +1556,64 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         half = cfg.MAP_SQ_Y // 2
         name = u"si_map_%d" % cell["k"]
         try:
-            ok = bool(cmd.SetCommand(util.b(
-                u"/tickingarea add %d %d %d %d %d %d %s" %
-                (cx0, y - half, cz0, cx0 + ms - 1, y + half, cz0 + ms - 1, name))))
+            if self.map_area:
+                cmdstr = (u"/tickingarea add %d %d %d %d %d %d %s" %
+                          (cx0, y - half, cz0, cx0 + ms - 1, y + half, cz0 + ms - 1, name))
+            else:
+                # 老写法：圆形常加载（四角盖不到，得靠巡逻补画；纯兼容用）
+                cmdstr = (u"/tickingarea add circle %d %d %d %d %s" %
+                          (cx0 + ms // 2, y, cz0 + ms // 2, cfg.MAP_TA_RADIUS, name))
+            ok = bool(cmd.SetCommand(util.b(cmdstr)))
         except Exception:
             ok = False
         if ok:
             cell["ta"] = name
         return ok
+
+    def _map_to_inv(self, pid, item):
+        """把一张地图直接塞进玩家背包（墙没搭成时的兜底，别把图弄丢）"""
+        try:
+            it = self.factory.CreateItem(pid)
+            if it.SpawnItemToPlayerInv(dict(item), pid):
+                return True
+        except Exception:
+            util.log_exc("map to inv")
+        return False
+
+    def _frame_ready(self, bi, pos, dim):
+        """展示框那格是不是真的加载着
+
+        往未加载区块里的展示框写数据，引擎会拿到悬空的方块实体指针直接崩
+        （NonOwnerPointer dangling），所以每次写之前先读一次。
+        判据放宽：只要读得出一个非空气方块就算加载了 —— 不同版本展示框的
+        名字不完全一样（frame / item_frame），卡名字会误判成没加载。
+        """
+        try:
+            b = bi.GetBlockNew(pos, dim)
+        except Exception:
+            return False
+        if not b:
+            return False
+        name = b.get("name") or b.get("newBlockName") or u""
+        name = util.u(name)
+        if name.startswith(u"minecraft:"):
+            name = name[10:]
+        return name not in (u"", u"air", u"void_air", u"structure_void")
+
+    def _frames_ready(self, q):
+        """抽三张（首/中/尾）看看墙是不是加载好了"""
+        frames = [f for f in (q.get("frames") or []) if f]
+        if not frames:
+            return True
+        bi = self._blocks()
+        if bi is None:
+            return False
+        dim = q.get("dim", 0)
+        picks = [frames[0], frames[len(frames) // 2], frames[-1]]
+        for fp in picks:
+            if not self._frame_ready(bi, fp, dim):
+                return False
+        return True
 
     def _map_ta_del(self, q, i):
         try:
@@ -1646,22 +1732,63 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self.factory.CreatePos(pid).SetPos((zx, q["y"], zz))
                 self._map_cd = self._map_zone_wait()
                 return
+            if q["stage"] == "warm":
+                if not any(q.get("frames") or []):
+                    # 一面墙都没搭成：地图全部塞背包，别让它们凭空消失
+                    for _k, _it in (q.get("maps") or []):
+                        self._map_to_inv(pid, _it)
+                    self.tell(pid, u"§e地图墙没搭成，§f%d §e张地图已放进背包" %
+                              len(q.get("maps") or []))
+                    self.map_queue = None
+                    return
+                # 回墙后别急着写展示框：墙那一片区块可能还没加载完，
+                # 对未加载区块里的展示框写数据会让引擎崩（dangling 指针）。
+                q["warm"] = int(q.get("warm") or 0) + 1
+                if self._frames_ready(q):
+                    q["stage"] = "mount"
+                    q["i"] = 0
+                    self._map_cd = 1
+                    return
+                if q["warm"] > 200:                 # 10 秒还加载不出来，别硬写
+                    self.tell(pid, u"§c地图墙区块一直没加载，地图已发放到背包，可自行贴到展示框")
+                    self.map_queue = None
+                    return
+                self._map_cd = 10
+                return
             if q["stage"] == "mount":
                 # 批量挂框：原来一张 5 tick，10 张就是 2.5 秒白等
+                bi = self._blocks()
+                be = self._blockEnt()
+                dim = q.get("dim", 0)
+                if be is None or bi is None:
+                    self.tell(pid, u"§c取不到方块实体组件，地图已发放到背包，请自行贴到展示框")
+                    self.map_queue = None
+                    return
                 batch = max(1, cfg.MAP_MOUNT_BATCH if self.map_speed >= 1 else 1)
+                bad = 0
                 while batch > 0 and q["i"] < len(q["maps"]):
                     k, item = q["maps"][q["i"]]
                     fp = q["frames"][k - 1] if q["frames"] else None
                     if fp is not None:
                         # 关键：用引擎自己产出的物品 dict（含正确 aux 地图编号与完整
                         # userData）；自己拼 dict 引擎会当空白图渲染
-                        be = self._blockEnt()
-                        if not be.SetFrameItem(fp, q.get("dim", 0), dict(item)):
-                            self.tell(pid, u"§c第 %d 张挂框失败" % k)
+                        if self._frame_ready(bi, fp, dim):
+                            try:
+                                if not be.SetFrameItem(fp, dim, dict(item)):
+                                    bad += 1
+                            except Exception:
+                                bad += 1
+                                util.log_exc("SetFrameItem")
+                        else:
+                            bad += 1
                     q["i"] += 1
                     batch -= 1
                 if q["i"] >= len(q["maps"]):
-                    self.tell(pid, u"§a地图墙挂好了，凑近看就是完整的一幅画")
+                    if bad:
+                        self.tell(pid, u"§e地图墙挂好 %d 张，§c%d 张没挂上§7（展示框被拆/区块刚加载），"
+                                       u"其余地图在背包里" % (len(q["maps"]) - bad, bad))
+                    else:
+                        self.tell(pid, u"§a地图墙挂好了，凑近看就是完整的一幅画")
                     self.map_queue = None
                     return
                 self._map_cd = 1
@@ -1680,11 +1807,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             except Exception:
                 util.log_exc("restore hand")
             if held is not None:
-                q["maps"].append((k, held))     # 引擎原生 dict，挂框时原样塞回
+                if q["frames"] and q["frames"][k - 1] is not None:
+                    q["maps"].append((k, held))     # 引擎原生 dict，挂框时原样塞回
+                else:
+                    # 墙上没位置（墙没搭成/这张的框被拆了）：地图塞回背包，别弄丢
+                    self._map_to_inv(pid, held)
+                    self.tell(pid, u"§7第 %d 张地图放进背包（墙上没位置）" % k)
             elif mu is not None:
-                q["maps"].append((k, {"itemName": "minecraft:filled_map", "count": 1,
-                                      "auxValue": 0,
-                                      "userData": {"map_uuid": mu}}))
+                self._map_to_inv(pid, {"itemName": "minecraft:filled_map", "count": 1,
+                                       "auxValue": 0, "userData": {"map_uuid": mu}})
             else:
                 self.tell(pid, u"§c第 %d 张地图生成失败，跳过" % k)
             # 这张图发完，撤掉它的常加载区块，顺手把下一张的挂上（等待与绘制重叠）
@@ -1703,7 +1834,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if q["i"] >= q["n"]:
                 # 全部生成完 -> 回到墙前统一挂框（墙区块跟着人加载，
                 # 避免对已卸载区块的展示框写数据触发引擎崩溃）
-                q["stage"] = "mount"
+                q["stage"] = "warm"
+                q["warm"] = 0
                 q["i"] = 0
                 w = q.get("wall")
                 if w:
@@ -1716,7 +1848,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             q["stage"] = "zone"
             self._map_cd = 2
         except Exception:
-            util.log_exc("give maps")
+            tb = traceback.format_exc()
+            util.log(u"give maps\n" + util.u(tb))
+            # 出错时把已经画好的地图塞回背包，并把原因说出来（静默失败最难查）
+            try:
+                for _k, _it in (q.get("maps") or []):
+                    self._map_to_inv(pid, _it)
+            except Exception:
+                pass
+            try:
+                self.tell(pid, u"§c地图阶段出错：§f" +
+                          util.short(util.u(tb.strip().splitlines()[-1]), 48))
+            except Exception:
+                pass
             try:
                 for _ci in _range(len(q.get("cells") or [])):
                     self._map_ta_del(q, _ci)
@@ -3072,7 +3216,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self.tell(job.pid, u"§7冻结已关（§f/structureim freeze on§7 可让水不再乱跑）")
             self.tell(job.pid, u"§7基准位置：§f%d, %d, %d" % job.base)
             if self.map_mode:
-                self._queue_maps(job)
+                # 地图阶段出任何岔子都只报错，不能把已经导好的结构拖成「放置中断」
+                try:
+                    self._queue_maps(job)
+                except Exception:
+                    tb = traceback.format_exc()
+                    util.log(u"地图墙异常\n" + util.u(tb))
+                    self.map_queue = None
+                    self.tell(job.pid, u"§c地图墙启动失败：§f" +
+                              util.short(util.u(tb.strip().splitlines()[-1]), 48))
         self.push(job.pid, self._page)
 
     # ------------------------------------------------------------ 客户端来的请求
