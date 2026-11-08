@@ -25,7 +25,7 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
                "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast",
                "manual", "help2"]

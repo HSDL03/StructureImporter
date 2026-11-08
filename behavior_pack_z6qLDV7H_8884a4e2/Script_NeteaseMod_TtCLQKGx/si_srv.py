@@ -200,6 +200,7 @@ HELP = [
     u"§f/structureim pause §7暂停 / 继续当前导入",
     u"§f/structureim info §7查看状态",
     u"§f/structureim split <开|关> §7分区导入开关",
+    u"§f/structureim map <开|关> §7地图画模式（导完搭墙画图，关掉能省一大截时间）",
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
     u"§f/structureim mapspeed <0-2> §7地图画速度：0稳(默认) 1快 2极速",
@@ -285,6 +286,7 @@ class Job(object):
         # 暂停 / 速度统计
         self.paused = False
         self.work_ticks = 0      # 实际干活的 tick 数（暂停和等区块不算），算速度用
+        self.parse_secs = 0.0    # 解析这一步花了多少秒（收尾时拆账用）
         # 写失败的方块（多为区块未加载），分区末尾自动重试一轮
         self.retry = []
         self.retry_cursor = 0
@@ -790,6 +792,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_selftest(pid)
         elif action in (u"split", u"zone"):
             self.cmd_split(pid, a1)
+        elif action in (u"map", u"mapmode"):
+            self.cmd_mapmode(pid, a1)
         elif action in (u"zwait", u"zsec"):
             self.cmd_zwait(pid, a1)
         elif action == u"bigwait":
@@ -882,6 +886,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._save()
         self.tell(pid, u"§a分区导入：§f%s §7（每区 %d 格）" %
                   (u"开" if self.split else u"关", cfg.SPLIT_SIZE))
+        self.push(pid, self._page)
+
+    def cmd_mapmode(self, pid, text):
+        """地图画模式开关：关掉它，导入完就结束，不再发地图、不再搭墙"""
+        t = util.u(text).strip().lower()
+        if t in (u"", u"toggle", u"switch"):
+            self.map_mode = not self.map_mode
+        elif t in (u"on", u"true", u"1", u"open", u"开"):
+            self.map_mode = True
+        elif t in (u"off", u"false", u"0", u"close", u"关"):
+            self.map_mode = False
+        else:
+            self.tell(pid, u"§e用法：/structureim map <开/关>")
+            return
+        self._save()
+        if self.map_mode:
+            self.tell(pid, u"§a地图画模式：§f开 §7（导完会搭墙、逐张画；每张约 %.1f 秒）" %
+                      ((self._map_first_wait(False) + self._map_give_wait() * 2 +
+                        self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)) / 20.0))
+        else:
+            self.tell(pid, u"§a地图画模式：§f关 §7（导完即结束，不再花时间画地图）")
         self.push(pid, self._page)
 
     def cmd_zwait(self, pid, text):
@@ -1223,12 +1248,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if self.threads > 1 and self._need_bg(entry):
             self._bg_start(pid, entry, rotation)
             return
+        t0 = time.time()
         try:
             data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
         except Exception as exc:
             util.log_exc("load " + entry.path)
             self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
             return
+        self._parse_secs = time.time() - t0
         self._begin_job(pid, entry, rotation, data)
 
     # ------------------------------------------------------------ 多线程解析
@@ -1309,6 +1336,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if data is None:
             self.tell(bg["pid"], u"§c解析失败：后台没有拿到数据")
             return
+        self._parse_secs = time.time() - bg["t0"]
         self._begin_job(bg["pid"], bg["entry"], bg["rot"], data)
 
     def _begin_job(self, pid, entry, rotation, data):
@@ -1365,6 +1393,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         side = self._pick_split_size(blocks)
         sections = self._build_sections(blocks, wake, ents, use_chunk, side)
         self.job = Job(pid, entry.rel, blocks, base, dim, ents, wake, sections, mobs)
+        self.job.parse_secs = float(getattr(self, "_parse_secs", 0.0) or 0.0)
         self.job.side = side
         self.job.wash_idx = wash
         self.replay_cmds = []
@@ -3277,6 +3306,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if job.seal_fixes:
                 msg += u" §7· 守水补写 §f%d" % job.seal_fixes
             self.tell(job.pid, msg)
+            # 把时间拆开：慢了到底是"写不动"还是"一直在等区块"，一眼能看出来
+            try:
+                total_s = job.tick / 20.0
+                work_s = job.work_ticks / 20.0
+                wait_s = max(0.0, total_s - work_s)
+                self.tell(job.pid, u"§7耗时 §f%.1fs§7 = 解析 §f%.1fs§7 + 写入 §f%.1fs§7 + 等区块 §f%.1fs"
+                                   u" §8(%.0f 块/秒)" %
+                          (total_s + job.parse_secs, job.parse_secs, work_s, wait_s,
+                           job.ok / work_s if work_s > 0.05 else 0.0))
+            except Exception:
+                pass
             if job.sealed and not job.freeze:
                 self.tell(job.pid, u"§7冻结已关（§f/structureim freeze on§7 可让水不再乱跑）")
             self.tell(job.pid, u"§7基准位置：§f%d, %d, %d" % job.base)
