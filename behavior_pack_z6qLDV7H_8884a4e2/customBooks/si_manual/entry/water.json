@@ -1,0 +1,18 @@
+{
+    "parent": "water",
+    "title": "液体与含水方块",
+    "pages": [
+        {
+            "type": "textPage",
+            "content": "§e结构里的水会被完整还原\n§f.mcstructure 把液体单独存在\n第二层（液体层）里：\n§f· 海、湖、水池：整片水照放\n§f· 含水楼梯/台阶/珊瑚：方块里带水\n§f· 水缸、炼药锅：状态一并还原\n\n§f旧写法 §ominecraft:flowing_water§r§f 会自动\n换成引擎认的 §fminecraft:water§r§f。\n\n§f导入开始时聊天框会告诉你\n「液体 N（最后放）」「含水方块 N」。"
+        },
+        {
+            "type": "textPage",
+            "content": "§e水为什么不会乱跑\n§f引擎里水会自己找位置流，\n所以 mod 做了三层保护：\n\n§f1. 液体最后放\n§f   先把池底池壁都放好，\n§f   再把水灌进去，不会先流开。\n§f2. 放之前人回到结构中心\n§f   区块加载好，水才写得进去。\n§f3. 放完守 6 秒\n§f   这段时间反复把每格水按住，\n§f   引擎想让它流也流不动。\n\n§f小栏会显示 §3❄ 冻结中 · 锁水 N 格§r§f。"
+        },
+        {
+            "type": "textPage",
+            "content": "§e想调？两个命令\n§f/structureim freeze <开/关>\n§f  导入期间冻结时间流逝\n§f  （尽量关掉随机刻、昼夜、天气，\n§f    结束后自动恢复原设置）\n§f  默认开。\n\n§f/structureim freezetime <0-60>\n§f  放完液体后再守几秒，默认 6。\n§f  设 0 = 只做最后写入，不守。\n\n§e注意\n§f守水期间别往水里放方块/放桶，\n§f那属于玩家自己改世界，mod 不管。\n§f结构本身很大时守水会顺延到\n§f最后一批液体放完才开始计时。"
+        }
+    ]
+}

@@ -280,6 +280,9 @@ class Structure(object):
         self.block_entities = block_entities or []
         # 实体：矿车 / 船 / 生物 / 掉落物，存 (x, y, z, identifier, nbt)
         self.entities = entities or []
+        # 液体/含水方块统计（老结构没有液体层时都是 0）
+        self.liquids = 0
+        self.waterlogged = 0
 
     @property
     def count(self):
@@ -291,6 +294,11 @@ class Structure(object):
 
 
 AIR_BLOCKS = ("minecraft:air", "minecraft:void_air", "minecraft:structure_void")
+# 液体层里会出现的名字（旧版还有 flowing_*，导入时会换成 water/lava）
+LIQUID_NAMES = ("minecraft:water", "minecraft:flowing_water",
+                "minecraft:lava", "minecraft:flowing_lava")
+# 方块 states 里表示"这格泡着水"的键
+WATERLOG_KEYS = ("waterlogged",)
 
 
 def _index_pos(index, size):
@@ -369,6 +377,12 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
     if not indices:
         raise ValueError("缺少 block_indices")
     layer0 = indices[0]
+    # 第二层是「液体层」：.mcstructure 把水/岩浆单独放这一层。
+    # 海里的方块、含水楼梯、水缸，方块本体在 layer0、水在 layer1，
+    # 只看 layer0 就会把整片海导成干的（真机上"导入完水全没了"就是这个）。
+    layer1 = None
+    if len(indices) > 1 and isinstance(indices[1], (list, tuple)):
+        layer1 = indices[1]
 
     palette = ((body.get("palette") or {}).get("default") or {}).get("block_palette") or []
     names = []
@@ -376,6 +390,7 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
     for item in palette:
         names.append(item.get("name") or "")
         states.append(item.get("states") or {})
+    n_pal = len(names)
 
     expect = sx * sy * sz
     total = len(layer0)
@@ -384,21 +399,53 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
 
     blocks = []
     append = blocks.append
+    n_liquid = 0
+    n_waterlog = 0
     for index in range(expect):
         v = layer0[index]
+        lv = layer1[index] if (layer1 is not None and index < len(layer1)) else -1
+        block_name = names[v] if 0 <= v < n_pal else ""
+        # 这个位置叠的液体（layer1 里只会有水/岩浆，其余当作没有）
+        liq = ""
+        if 0 <= lv < n_pal and names[lv] in LIQUID_NAMES:
+            liq = names[lv]
         if v < 0:
-            if skip_void:
-                continue
-            v = 0
-        if v >= len(names):
+            # 结构空位：保留原方块。但液体层在这里给了水 -> 说明"这一格只有水"
+            if liq and not skip_void:
+                x, y, z = _index_pos(index, (sx, sy, sz))
+                append((x, y, z, liq, dict(states[lv] or {})))
+                n_liquid += 1
             continue
-        block_name = names[v]
         if not block_name:
             continue
+        if block_name in AIR_BLOCKS:
+            # 空气格上叠了液体 = 实心水（layer0 是结构空位时同理，水照放）
+            if liq and (block_name != "minecraft:structure_void" or not skip_void):
+                x, y, z = _index_pos(index, (sx, sy, sz))
+                append((x, y, z, liq, dict(states[lv] or {})))
+                n_liquid += 1
+            elif skip_air:
+                continue
+        elif liq and block_name not in LIQUID_NAMES:
+            # 方块 + 液体叠加 = 含水方块。基岩版靠 waterlogged 状态表示，
+            # 原方块认这个状态就补上（水缸里的珊瑚、台阶里的水都能还原）。
+            st = states[v] or {}
+            if any(k in st for k in WATERLOG_KEYS):
+                st = dict(st)
+                for k in WATERLOG_KEYS:
+                    if k in st:
+                        st[k] = 1
+                x, y, z = _index_pos(index, (sx, sy, sz))
+                append((x, y, z, block_name, st))
+                n_waterlog += 1
+                continue
+            # 方块本身不吃 waterlogged：只放方块（水丢掉，总比整格没有强）
         if skip_air and block_name in AIR_BLOCKS:
             continue
         x, y, z = _index_pos(index, (sx, sy, sz))
         append((x, y, z, block_name, states[v]))
+        if block_name in LIQUID_NAMES:
+            n_liquid += 1
 
     ents = body.get("entities")
     entity_count = len(ents) if isinstance(ents, list) else 0
@@ -443,8 +490,11 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
             continue
         struct_ents.append((ex, ey, ez, ident, item))
 
-    return Structure(name or "memory", None, (sx, sy, sz), blocks, entity_count,
-                     block_entities, struct_ents)
+    out = Structure(name or "memory", None, (sx, sy, sz), blocks, entity_count,
+                    block_entities, struct_ents)
+    out.liquids = n_liquid        # 液体格数（最后单独写，免得乱流）
+    out.waterlogged = n_waterlog  # 含水方块数（方块 + 水）
+    return out
 
 
 def _wrap_plain_compound(d):
@@ -491,6 +541,64 @@ def rotate_entities(ents, size, times):
     return out
 
 
+# 绕 Y 轴顺时针转 90° 时，每个方向的下一步
+_CW_CARD = {"north": "east", "east": "south", "south": "west", "west": "north"}
+_CW_FACING = {2: 5, 5: 3, 3: 4, 4: 2}        # facing_direction: 2北 3南 4西 5东
+_CW_WEIRDO = {0: 2, 2: 1, 1: 3, 3: 0}        # weirdo_direction（楼梯）0东 1西 2南 3北
+_CW_DIR = {0: 1, 1: 2, 2: 3, 3: 0}           # direction: 0南 1西 2北 3东
+_AXIS_SWAP = {"x": "z", "z": "x", "y": "y"}
+
+
+def _rot_state(key, val, times):
+    """把一个方块状态的值按"绕 Y 轴转 times 个 90°"改写
+
+    结构旋转以前只转坐标不转朝向，楼梯/漏斗/告示牌转完都指着原来的方向。
+    这里覆盖基岩版最常见的几组方向状态，认不出来的原样留着。
+    """
+    k = key.lower()
+    if "facing" in k or k in ("cardinal_direction", "direction", "weirdo_direction"):
+        # 字符串方向
+        if isinstance(val, STR_TYPES):
+            v = val.lower()
+            for _ in range(times):
+                v = _CW_CARD.get(v, v)
+            return v
+        try:
+            iv = int(val)
+        except (TypeError, ValueError):
+            return val
+        if k == "facing_direction" or k.endswith("_facing_direction"):
+            for _ in range(times):
+                iv = _CW_FACING.get(iv, iv)
+            return iv
+        if k == "weirdo_direction":
+            for _ in range(times):
+                iv = _CW_WEIRDO.get(iv, iv)
+            return iv
+        if k == "direction":
+            for _ in range(times):
+                iv = _CW_DIR.get(iv, iv)
+            return iv
+        return val
+    if k in ("pillar_axis", "axis"):
+        return _AXIS_SWAP.get(val, val) if times % 2 else val
+    if k == "rotation":
+        try:
+            return (int(val) + 4 * times) % 16
+        except (TypeError, ValueError):
+            return val
+    return val
+
+
+def _rot_states(st, times):
+    if not st or not times:
+        return st
+    out = {}
+    for k, v in st.items():
+        out[k] = _rot_state(k, v, times)
+    return out
+
+
 def rotate(blocks, size, times):
     """绕 Y 轴旋转 0~3 个 90°，返回 (新方块表, 新尺寸)"""
     times = int(times) % 4
@@ -503,15 +611,15 @@ def rotate(blocks, size, times):
     if times == 1:
         new_size = (sz, sy, sx)
         for (x, y, z, name, st) in blocks:
-            append((sz - 1 - z, y, x, name, st))
+            append((sz - 1 - z, y, x, name, _rot_states(st, 1)))
     elif times == 2:
         new_size = (sx, sy, sz)
         for (x, y, z, name, st) in blocks:
-            append((sx - 1 - x, y, sz - 1 - z, name, st))
+            append((sx - 1 - x, y, sz - 1 - z, name, _rot_states(st, 2)))
     else:
         new_size = (sz, sy, sx)
         for (x, y, z, name, st) in blocks:
-            append((z, y, sx - 1 - x, name, st))
+            append((z, y, sx - 1 - x, name, _rot_states(st, 3)))
     return out, new_size
 
 

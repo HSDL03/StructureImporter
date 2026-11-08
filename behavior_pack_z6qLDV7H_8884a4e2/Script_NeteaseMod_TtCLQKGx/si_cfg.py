@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "manual", "help2"]
+               "nbtlimit", "freeze", "freezetime", "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -115,6 +115,39 @@ REDSTONE_HINTS = (
 )
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
+
+# ---------------------------------------------------------------- 旧名 / 引擎里不存在的方块
+# 结构文件里有些名字是别的版本/工具的遗留写法，直接 SetBlockNew 会静默返回 False
+# （然后被当成"区块没加载"无限重试）。这里换成引擎认的等价方块。
+BLOCK_ALIAS = {
+    "minecraft:flowing_water": "minecraft:water",     # 基岩版只有 water + liquid_depth
+    "minecraft:flowing_lava": "minecraft:lava",
+    "minecraft:lit_furnace": "minecraft:furnace",
+    "minecraft:lit_pumpkin": "minecraft:jack_o_lantern",
+    "minecraft:unlit_redstone_torch": "minecraft:redstone_torch",
+    "minecraft:powered_repeater": "minecraft:unpowered_repeater",
+    "minecraft:powered_comparator": "minecraft:unpowered_comparator",
+    "minecraft:reeds": "minecraft:reeds",
+}
+# 这些是"怎么放都会掉/放不出来"的运行时方块，出现就跳过并单独计数，不进失败重试
+SKIP_BLOCKS = (
+    "minecraft:moving_block", "minecraft:piston_arm_collision",
+    "minecraft:sticky_piston_arm_collision", "minecraft:light_block",
+    "minecraft:fire_block", "minecraft:unknown", "minecraft:deny",
+    "minecraft:allow", "minecraft:border_block", "minecraft:client_request_placeholder_block",
+)
+# 液体：单独排队到最后写（先放固体再放水，水才不会在方块没到位时到处流）
+LIQUID_BLOCKS = ("minecraft:water", "minecraft:lava")
+# 支持含水的方块（states 里有 waterlogged 就自动带水）
+WATERLOG_KEYS = ("waterlogged",)
+
+# ---------------------------------------------------------------- 冻结（水不乱跑）
+# 导入期间把"时间流逝"按住：液体单独最后写入，写完再守若干秒把被引擎改动的水改回去；
+# 同时尽量关掉随机刻/昼夜/天气（只改能读到的游戏规则，结束时原样恢复）。
+FREEZE_DEFAULT = True     # 默认开启
+FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
+FREEZE_SECS_MAX = 60.0
+FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒回写
 
 # ---------------------------------------------------------------- 物品 NBT 安全阈值
 # 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，
