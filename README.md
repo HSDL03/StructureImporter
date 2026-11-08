@@ -118,6 +118,19 @@
 
 巡图时跟着传送走即可，不要手动乱跑。参数不合适可用 `znum` / `zwait` 调整。
 
+## 它基于结构方块
+
+本 MOD 解析的 `.mcstructure` 文件正是游戏内**结构方块（Structure Block）**保存的格式——先用结构方块框选并保存建筑，再用本 MOD 批量、自动地放置它们。
+
+<p align="center">
+	<img src="https://zh.minecraft.wiki/images/Structure_Block_JE2_BE1.png" width="180px" alt="结构方块" />
+	<img src="https://zh.minecraft.wiki/images/Structure_Block_Corner_JE2_BE1.png" width="180px" alt="结构方块（角落模式）" />
+	<img src="https://zh.minecraft.wiki/images/Structure_Block_Bedrock_ClassicUI_Simplified.png" width="240px" alt="存档界面" />
+	<img src="https://zh.minecraft.wiki/images/Structure_Block_Bedrock_ClassicUI_Load_Simplified.png" width="240px" alt="加载界面" />
+</p>
+
+<p align="center"><sub>图片来自 <a href="https://zh.minecraft.wiki/w/%E7%BB%93%E6%9E%84%E6%96%B9%E5%9D%97">中文 Minecraft Wiki · 结构方块</a>，版权归 Mojang Studios 所有</sub></p>
+
 ## 目录结构
 
 ```
