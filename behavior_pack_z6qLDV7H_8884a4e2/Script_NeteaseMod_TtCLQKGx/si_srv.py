@@ -202,7 +202,7 @@ HELP = [
     u"§f/structureim split <开|关> §7分区导入开关",
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
-    u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳 1快 2极速(默认)",
+    u"§f/structureim mapspeed <0-2> §7地图画速度：0稳(默认) 1快 2极速",
     u"§f/structureim maparea <square|circle> §7地图常加载形状（方形默认；报命令错就切 circle）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
@@ -553,11 +553,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._frozen_rules = None            # 被改过的游戏规则原值，结束时恢复
         self._skipped = 0                    # 上一次整理时跳过的运行时方块数
         self._liquid_idx = []                # 上一次切分区时挑出来的液体索引
+        self._cfg_ver = 0                        # 存档里的配置版本（用于一次性迁移）
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
         self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
+                # 老存档里的配置版本：低于当前版本的项做一次性迁移
+                try:
+                    self._cfg_ver = int(util.u(raw.get("cfgver")) or 0)
+                except (TypeError, ValueError):
+                    self._cfg_ver = 0
                 path = util.u(raw.get("dir"))
                 flag = util.u(raw.get("split")).strip()
                 if flag:
@@ -624,11 +630,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.freeze_secs = max(0.0, min(cfg.FREEZE_SECS_MAX, fs))
                 except (TypeError, ValueError):
                     pass
-                try:
-                    ms = int(util.u(raw.get("mapspeed")))
-                    self.map_speed = max(0, min(2, ms))
-                except (TypeError, ValueError):
-                    pass
+                if self._cfg_ver >= cfg.CFG_VERSION:
+                    # 只有新版本存档才认地图画速度档：老存档里被设成极速的，
+                    # 升级后一律回到「稳」，避免继续踩挂画阶段那个坑
+                    try:
+                        ms = int(util.u(raw.get("mapspeed")))
+                        self.map_speed = max(0, min(2, ms))
+                    except (TypeError, ValueError):
+                        pass
                 if raw.get("maparea") is not None:
                     self.map_area = util.u(raw.get("maparea")) != u"0"
             elif raw:
@@ -662,6 +671,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "freezesecs": util.b(str(self.freeze_secs)),
                  "mapspeed": util.b(str(self.map_speed)),
                  "maparea": util.b(u"1" if self.map_area else u"0"),
+                 "cfgver": util.b(str(cfg.CFG_VERSION)),
                  "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
             util.log_exc("save config")
@@ -1079,8 +1089,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.map_speed = table[t]
         self._save()
         if self.map_speed == 0:
-            self.tell(pid, u"§a地图画速度：§f稳 §7（旧逻辑，圆形常加载 + 每区停 %d 秒）" %
+            self.tell(pid, u"§a地图画速度：§f稳§7（默认。老的圆形常加载 + 每区停 %d 秒，最不容易出错）" %
                       self.zone_secs)
+            self.tell(pid, u"§7单张约 %.1f 秒；只是慢，但挂画不会出错" %
+                      ((self._map_first_wait(False) + self._map_give_wait() * 2 +
+                        self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)) / 20.0))
         else:
             per = self._map_first_wait(False) + self._map_give_wait() * 2 + \
                 self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)
@@ -1109,9 +1122,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             return
         self._save()
         if self.map_area:
-            self.tell(pid, u"§a常加载改成 §f方形§a：一次盖住整幅 128×128，巡逻点可以少")
+            self.tell(pid, u"§a常加载形状：§f方形§7（只在 §fmapspeed 1/2 §7生效，一次盖住整幅 128×128）")
+            if self.map_speed == 0:
+                self.tell(pid, u"§7当前是稳档，仍走老的圆形常加载；想用方形先把 §fmapspeed §7调到 1 或 2")
         else:
-            self.tell(pid, u"§a常加载改成 §f圆形§a（老写法）：四角盖不到，要把 §fznum §a调大（如 5~9）")
+            self.tell(pid, u"§a常加载形状：§f圆形§7（老写法，四角盖不到，§fznum §7调大些更保险）")
 
     def cmd_znum(self, pid, text):
         try:
@@ -1556,7 +1571,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         half = cfg.MAP_SQ_Y // 2
         name = u"si_map_%d" % cell["k"]
         try:
-            if self.map_area:
+            # 稳档（speed 0）一律走老的圆形常加载：这是实测能用、挂画不出错的那条路。
+            # 只有快/极速档才用方形（方形一次盖满，配合提前挂载才吃得下 tick 级等待）。
+            if self.map_area and self.map_speed >= 1:
                 cmdstr = (u"/tickingarea add %d %d %d %d %d %d %s" %
                           (cx0, y - half, cz0, cx0 + ms - 1, y + half, cz0 + ms - 1, name))
             else:
