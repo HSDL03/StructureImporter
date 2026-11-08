@@ -200,18 +200,20 @@ HELP = [
     u"§f/structureim pause §7暂停 / 继续当前导入",
     u"§f/structureim info §7查看状态",
     u"§f/structureim split <开|关> §7分区导入开关",
-    u"§f/structureim map <开|关> §7地图画模式（导完搭墙画图，关掉能省一大截时间）",
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
-    u"§f/structureim mapspeed <0-2> §7地图画速度：0稳(默认) 1快 2极速",
-    u"§f/structureim maparea <square|circle> §7地图常加载形状（方形默认；报命令错就切 circle）",
+    u"§f/structureim mapspeed <0-2> §7地图画速度档：0稳(默认) 1快 2极速",
+    u"§f/structureim maparea <方形|圆形> §7地图常加载形状（默认方形，盖满整幅）",
+    u"§f/structureim map <开|关> §7地图画模式（关掉=导完就结束，不搭墙不画图）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
+    u"§f/structureim turbo <开|关> §7急速模式（等区块压到最短，大结构提速主力）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
-    u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
     u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
     u"§f/structureim nbtlimit <0|8-1024> §7物品NBT上限KB，0=不裁剪（默认）",
+    u"§f/structureim freeze <开|关> §7导入期间冻结时间流逝（水不乱跑，默认关）",
+    u"§f/structureim freezetime <0-60> §7放完液体后再守几秒（默认6）",
     u"§f/structureim selftest §7环境自检",
     u"§f/structureim manual §7看分步教程（也可右键使用说明书物品）",
 ]
@@ -284,7 +286,6 @@ class Job(object):
         # 暂停 / 速度统计
         self.paused = False
         self.work_ticks = 0      # 实际干活的 tick 数（暂停和等区块不算），算速度用
-        self.parse_secs = 0.0    # 解析这一步花了多少秒（收尾时拆账用）
         # 写失败的方块（多为区块未加载），分区末尾自动重试一轮
         self.retry = []
         self.retry_cursor = 0
@@ -303,7 +304,11 @@ class Job(object):
         self.liq_cursor = 0
         self.liq_ok = 0
         self.liq_fail = 0
-        self.liq_cache = {}       # (name, aux, states) -> 方块字典：几万格水只留几份
+        self.sealed = []          # 已放下的液体 [(pos, name, aux, states)]，守护阶段回写
+        self.seal_cursor = 0
+        self.seal_until = 0       # 守护到第几 tick（0 = 不守）
+        self.seal_pass = 0
+        self.freeze = True        # 本次任务是否冻结时间流逝
         self.liq_armed = False    # 放液体前是否已经把人送回结构中心
         self.note = u""           # 临时状态（原分区提示），只显示在 tip 上，不进聊天框
 
@@ -413,6 +418,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             util.log_exc("tell")
 
+    # ------------------------------------------------------------ 冻结时间流逝
     # 水/岩浆流动走引擎的方块刻，没有"暂停某个区域"的公开接口。能做的是两手：
     #   1. 尽量把随机刻/昼夜/天气按住（只动读得到的规则，结束原样恢复）
     #   2. 液体最后放、放完守几秒原地重写（真正管用的是这招，见 _step_seal）
@@ -420,6 +426,44 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     "do_daylight_cycle", "daylight_cycle",
                     "do_weather_cycle", "weather_cycle")
 
+    def _freeze_on(self):
+        if self._frozen_rules is not None:
+            return
+        game = self._game()
+        if game is None:
+            self._frozen_rules = {}
+            return
+        try:
+            rules = game.GetGameRulesInfoServer()
+        except Exception:
+            rules = None
+        saved = {}
+        if isinstance(rules, dict):
+            for k, v in rules.items():
+                if util.u(k).lower() in self._FREEZE_KEYS:
+                    saved[k] = v
+        self._frozen_rules = saved
+        upd = {}
+        for k in saved:
+            upd[k] = 0 if "tick" in util.u(k).lower() else False
+        if upd:
+            try:
+                game.SetGameRulesInfoServer(upd)
+            except Exception:
+                util.log_exc("freeze rules")
+
+    def _freeze_off(self):
+        saved = self._frozen_rules
+        self._frozen_rules = None
+        if not saved:
+            return
+        game = self._game()
+        if game is None:
+            return
+        try:
+            game.SetGameRulesInfoServer(saved)
+        except Exception:
+            util.log_exc("unfreeze rules")
     # ------------------------------------------------------------ T显（tip 通知）
     def _tip_raw(self, text):
         """不绑定任务的一条 tip（解析阶段、收尾提示用）"""
@@ -441,7 +485,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         game = self._game()
         if game is None:
             return
-        done = job.ok + job.fail
+        done = job.ok + job.fail + job.liq_ok + job.liq_fail
         if job.total:
             pct = int(done * 100 / job.total)
         else:
@@ -458,6 +502,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             text = u"§e⏸ 结构导入 §c已暂停 §7%d%% %s §8(/structureim pause 继续)" % (pct, speed)
         elif job.waiting:
             text = u"§e⏳ 结构导入 §f%d%% %s §7等区块加载 %s" % (pct, speed, self._sec_tag(job))
+        elif job.phase == "liquid":
+            n = len(job.liquid_idx)
+            text = u"§b▶ 结构导入 §f%d%% §7· §9放液体 §f%d/%d §7· %s" % (
+                pct, job.liq_cursor, n, speed)
+        elif job.phase == "seal":
+            left = max(0, job.seal_until - job.tick) / 20.0
+            text = u"§3■ 结构导入 §f冻结中 §7· §9锁水 %d 格 §7· 剩 %.0fs" % (
+                len(job.sealed), left)
         else:
             phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
                      u"ents": u"§d方块实体", u"items": u"§d容器物品",
@@ -489,20 +541,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.threads = cfg.THREADS_DEFAULT
         self.parallel = cfg.PARALLEL_DEFAULT
         self.nbt_limit = cfg.ITEM_NBT_MAX_KB
+        self.freeze = cfg.FREEZE_DEFAULT     # 导入期间冻结时间流逝（水不乱流）
+        self.freeze_secs = cfg.FREEZE_SECS   # 全部写完后继续守液体多少秒
         self._frozen_rules = None            # 被改过的游戏规则原值，结束时恢复
         self._skipped = 0                    # 上一次整理时跳过的运行时方块数
         self._liquid_idx = []                # 上一次切分区时挑出来的液体索引
-        self._cfg_ver = 0                        # 存档里的配置版本（用于一次性迁移）
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
-        self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
+        self.map_area = cfg.MAP_AREA_DEFAULT     # 常加载形状：1 方形（快档前提）/ 0 圆形
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
-                # 老存档里的配置版本：低于当前版本的项做一次性迁移
-                try:
-                    self._cfg_ver = int(util.u(raw.get("cfgver")) or 0)
-                except (TypeError, ValueError):
-                    self._cfg_ver = 0
                 path = util.u(raw.get("dir"))
                 flag = util.u(raw.get("split")).strip()
                 if flag:
@@ -561,16 +609,29 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.tick_speed = max(cfg.SPEED_MIN, min(cfg.SPEED_MAX, speed))
                 except (TypeError, ValueError):
                     pass
-                if self._cfg_ver >= cfg.CFG_VERSION:
-                    # 只有新版本存档才认地图画速度档：老存档里被设成极速的，
-                    # 升级后一律回到「稳」，避免继续踩挂画阶段那个坑
-                    try:
-                        ms = int(util.u(raw.get("mapspeed")))
-                        self.map_speed = max(0, min(2, ms))
-                    except (TypeError, ValueError):
-                        pass
-                if raw.get("maparea") is not None:
-                    self.map_area = util.u(raw.get("maparea")) != u"0"
+                fz = util.u(raw.get("freeze")).strip()
+                if fz:
+                    self.freeze = fz == u"1"
+                try:
+                    fs = float(util.u(raw.get("freezesecs")))
+                    self.freeze_secs = max(0.0, min(cfg.FREEZE_SECS_MAX, fs))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    ms = int(util.u(raw.get("mapspeed")))
+                    self.map_speed = max(0, min(2, ms))
+                except (TypeError, ValueError):
+                    pass
+                ma = util.u(raw.get("maparea")).strip()
+                if ma:
+                    self.map_area = ma == u"1"
+                try:
+                    ver = int(util.u(raw.get("cfgver")) or 0)
+                except (TypeError, ValueError):
+                    ver = 0
+                if ver < 1 and self.map_speed > 1:
+                    # 老存档里的「极速」挂画容易缺角，迁移回默认档
+                    self.map_speed = cfg.MAP_SPEED_DEFAULT
             elif raw:
                 path = util.u(raw)
         except Exception:
@@ -598,6 +659,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "budget": util.b(str(self.budget)),
                  "threads": util.b(str(self.threads)),
                  "parallel": util.b(str(self.parallel)),
+                 "freeze": util.b(u"1" if self.freeze else u"0"),
+                 "freezesecs": util.b(str(self.freeze_secs)),
                  "mapspeed": util.b(str(self.map_speed)),
                  "maparea": util.b(u"1" if self.map_area else u"0"),
                  "cfgver": util.b(str(cfg.CFG_VERSION)),
@@ -659,6 +722,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§e五、并行：§fthreads <1-8> §7解析线程（≥2 后台解析）、§fparallel <1-4> §7相邻分区并行")
         self.tell(pid, u"§e六、含水/液体：§f默认自动处理 §7（海里、水池、含水楼梯、水缸都能还原）")
         self.tell(pid, u"§7  · 液体全部固体放完后才灌，灌完守几秒，期间水不会到处乱流")
+        self.tell(pid, u"§7  · §ffreeze <开/关> §7冻结时间流逝、§ffreezetime <0-60> §7守水秒数")
         self.tell(pid, u"§e七、其它开关：§fsplit 开/关 §7分区、§fturbo §7急速、§fselftest §7自检")
         self.tell(pid, u"§7详情输入 §f/structureim §7看完整命令列表。")
 
@@ -707,6 +771,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 for _ci in _range(len(self.map_queue.get("cells") or [])):
                     self._map_ta_del(self.map_queue, _ci)
                 self.map_queue = None
+            self._freeze_off()         # 中止也要把游戏规则还回去
             self._tip_raw(u"")
             self.tell(pid, u"§a已中止")
         elif action in (u"pause", u"resume", u"p"):
@@ -717,8 +782,6 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_selftest(pid)
         elif action in (u"split", u"zone"):
             self.cmd_split(pid, a1)
-        elif action in (u"map", u"mapmode"):
-            self.cmd_mapmode(pid, a1)
         elif action in (u"zwait", u"zsec"):
             self.cmd_zwait(pid, a1)
         elif action == u"bigwait":
@@ -731,9 +794,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_parallel(pid, a1)
         elif action in (u"nbtlimit", u"nbt"):
             self.cmd_nbtlimit(pid, a1)
+        elif action in (u"freeze", u"冻结"):
+            self.cmd_freeze(pid, a1)
+        elif action in (u"freezetime", u"freezesecs", u"frost"):
+            self.cmd_freezetime(pid, a1)
+        elif action in (u"map", u"mapmode"):
+            self.cmd_mapmode(pid, a1)
         elif action in (u"mapspeed", u"mapspd", u"mspeed"):
             self.cmd_mapspeed(pid, a1)
-        elif action in (u"maparea", u"marea"):
+        elif action == u"maparea":
             self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
@@ -807,27 +876,6 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._save()
         self.tell(pid, u"§a分区导入：§f%s §7（每区 %d 格）" %
                   (u"开" if self.split else u"关", cfg.SPLIT_SIZE))
-        self.push(pid, self._page)
-
-    def cmd_mapmode(self, pid, text):
-        """地图画模式开关：关掉它，导入完就结束，不再发地图、不再搭墙"""
-        t = util.u(text).strip().lower()
-        if t in (u"", u"toggle", u"switch"):
-            self.map_mode = not self.map_mode
-        elif t in (u"on", u"true", u"1", u"open", u"开"):
-            self.map_mode = True
-        elif t in (u"off", u"false", u"0", u"close", u"关"):
-            self.map_mode = False
-        else:
-            self.tell(pid, u"§e用法：/structureim map <开/关>")
-            return
-        self._save()
-        if self.map_mode:
-            self.tell(pid, u"§a地图画模式：§f开 §7（导完会搭墙、逐张画；每张约 %.1f 秒）" %
-                      ((self._map_first_wait(False) + self._map_give_wait() * 2 +
-                        self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)) / 20.0))
-        else:
-            self.tell(pid, u"§a地图画模式：§f关 §7（导完即结束，不再花时间画地图）")
         self.push(pid, self._page)
 
     def cmd_zwait(self, pid, text):
@@ -911,6 +959,43 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         else:
             self.tell(pid, u"§a相邻分区并行：§f关")
 
+    def cmd_freeze(self, pid, text):
+        """导入期间冻结时间流逝（水/岩浆不乱跑）：不填 = 开关切换"""
+        t = (text or u"").strip().lower()
+        if t in (u"on", u"1", u"开", u"true"):
+            v = True
+        elif t in (u"off", u"0", u"关", u"false"):
+            v = False
+        elif not t:
+            v = not self.freeze
+        else:
+            self.tell(pid, u"§e用法：/structureim freeze <on/off> §7当前 %s" %
+                      (u"开" if self.freeze else u"关"))
+            self.tell(pid, u"§7开启后：液体最后统一放，放完再守 %.0f 秒，期间水不会乱流" %
+                      self.freeze_secs)
+            return
+        self.freeze = v
+        self._save()
+        if v:
+            self.tell(pid, u"§a冻结时间流逝：§f开 §7（液体最后放 + 守 %.0f 秒）" % self.freeze_secs)
+        else:
+            self.tell(pid, u"§a冻结时间流逝：§f关 §7（水流会按引擎规则自己流）")
+
+    def cmd_freezetime(self, pid, text):
+        """守液体多少秒：0 = 只做最后写入，不守"""
+        try:
+            v = float((text or u"").strip())
+        except ValueError:
+            self.tell(pid, u"§e用法：/structureim freezetime <0-%.0f> §7当前 %.1f 秒" %
+                      (cfg.FREEZE_SECS_MAX, self.freeze_secs))
+            return
+        if not (0.0 <= v <= cfg.FREEZE_SECS_MAX):
+            self.tell(pid, u"§c范围 0~%.0f 秒" % cfg.FREEZE_SECS_MAX)
+            return
+        self.freeze_secs = v
+        self._save()
+        self.tell(pid, u"§a液体守护时长：§f%.1f 秒" % v)
+
     def cmd_turbo(self, pid, text):
         """急速模式：分区等待压到最短、写入预算拉满（大结构提速的主要手段）"""
         t = (text or u"").strip().lower()
@@ -972,6 +1057,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         else:
             self.tell(pid, u"§a物品 NBT 上限：§f%d KB §7（超出的只留物品本体）" % v)
 
+    def cmd_mapmode(self, pid, text):
+        """地图画模式开关：关掉它，导入完就结束，不再发地图、不再搭墙"""
+        t = util.u(text).strip().lower()
+        if t in (u"", u"toggle", u"switch"):
+            self.map_mode = not self.map_mode
+        elif t in (u"on", u"true", u"1", u"open", u"开"):
+            self.map_mode = True
+        elif t in (u"off", u"false", u"0", u"close", u"关"):
+            self.map_mode = False
+        else:
+            self.tell(pid, u"§e用法：/structureim map <开/关>")
+            return
+        self._save()
+        if self.map_mode:
+            self.tell(pid, u"§a地图画模式：§f开 §7（导完会搭墙、逐张画；每张约 %.1f 秒）" %
+                      ((self._map_first_wait(False) + self._map_give_wait() * 2 +
+                        self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)) / 20.0))
+        else:
+            self.tell(pid, u"§a地图画模式：§f关 §7（导完即结束，不再花时间画地图）")
+        self.push(pid, self._page)
+
     def cmd_mapspeed(self, pid, text):
         """地图画速度档：0 稳（旧逻辑）/ 1 快（默认）/ 2 极速
 
@@ -998,11 +1104,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.map_speed = table[t]
         self._save()
         if self.map_speed == 0:
-            self.tell(pid, u"§a地图画速度：§f稳§7（默认。老的圆形常加载 + 每区停 %d 秒，最不容易出错）" %
+            self.tell(pid, u"§a地图画速度：§f稳 §7（旧逻辑，圆形常加载 + 每区停 %d 秒）" %
                       self.zone_secs)
-            self.tell(pid, u"§7单张约 %.1f 秒；只是慢，但挂画不会出错" %
-                      ((self._map_first_wait(False) + self._map_give_wait() * 2 +
-                        self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)) / 20.0))
         else:
             per = self._map_first_wait(False) + self._map_give_wait() * 2 + \
                 self._map_hold() + self._map_zone_wait() * max(0, self.zones_n - 1)
@@ -1013,29 +1116,23 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self.tell(pid, u"§7极速档如果出现缺角/空白，改回 §f1 §7或把 §fznum §7调大")
 
     def cmd_maparea(self, pid, text):
-        """常加载形状：square（默认，盖满整幅）/ circle（老写法，兼容用）
-
-        如果你的版本不认方形 tickingarea（聊天框报命令语法错），就切 circle。
-        """
+        """常加载形状：方形（精确盖住整幅，快档前提）/ 圆形（旧行为）"""
         t = (text or u"").strip().lower()
-        if not t:
-            self.tell(pid, u"§e用法：/structureim maparea <square|circle> §7当前 §f%s" %
-                      (u"square 方形" if self.map_area else u"circle 圆形"))
-            return
-        if t in (u"square", u"1", u"方", u"方形"):
-            self.map_area = True
-        elif t in (u"circle", u"0", u"圆", u"圆形"):
-            self.map_area = False
+        if t in (u"on", u"1", u"开", u"square", u"方形"):
+            v = True
+        elif t in (u"off", u"0", u"关", u"circle", u"圆形"):
+            v = False
+        elif not t:
+            v = not self.map_area
         else:
-            self.tell(pid, u"§c只认 square / circle")
+            self.tell(pid, u"§e用法：/structureim maparea <方形|圆形> §7当前 %s" %
+                      (u"方形" if self.map_area else u"圆形"))
             return
+        self.map_area = v
         self._save()
-        if self.map_area:
-            self.tell(pid, u"§a常加载形状：§f方形§7（只在 §fmapspeed 1/2 §7生效，一次盖住整幅 128×128）")
-            if self.map_speed == 0:
-                self.tell(pid, u"§7当前是稳档，仍走老的圆形常加载；想用方形先把 §fmapspeed §7调到 1 或 2")
-        else:
-            self.tell(pid, u"§a常加载形状：§f圆形§7（老写法，四角盖不到，§fznum §7调大些更保险）")
+        self.tell(pid, u"§a常加载形状：§f%s §7（%s）" %
+                  (u"方形" if v else u"圆形",
+                   u"精确盖住整幅 128×128" if v else u"圆角盖不满，靠巡逻补"))
 
     def cmd_znum(self, pid, text):
         try:
@@ -1088,6 +1185,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                   (self.threads, u"后台解析" if self.threads > 1 else u"主线程解析"))
         self.tell(pid, u"§6相邻并行：§f%d §7（%s）" %
                   (self.parallel, u"提前加载邻区" if self.parallel > 1 else u"关"))
+        self.tell(pid, u"§6冻结时间：§f%s §7（守液体 %.1f 秒）" %
+                  (u"开" if self.freeze else u"关", self.freeze_secs))
         self.tell(pid, u"§6地图速度：§f%s §7（单张约 %.1f 秒）" %
                   ([u"稳", u"快", u"极速"][self.map_speed],
                    (self._map_first_wait(False) + self._map_give_wait() * 2 +
@@ -1130,14 +1229,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if self.threads > 1 and self._need_bg(entry):
             self._bg_start(pid, entry, rotation)
             return
-        t0 = time.time()
         try:
             data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
         except Exception as exc:
             util.log_exc("load " + entry.path)
             self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
             return
-        self._parse_secs = time.time() - t0
         self._begin_job(pid, entry, rotation, data)
 
     # ------------------------------------------------------------ 多线程解析
@@ -1218,7 +1315,6 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if data is None:
             self.tell(bg["pid"], u"§c解析失败：后台没有拿到数据")
             return
-        self._parse_secs = time.time() - bg["t0"]
         self._begin_job(bg["pid"], bg["entry"], bg["rot"], data)
 
     def _begin_job(self, pid, entry, rotation, data):
@@ -1256,13 +1352,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                        int(math.ceil((max(b[2] for b in blocks) - min(b[2] for b in blocks) + 1) / float(ms)))))
 
         # 红石相关方块最后再触发一次邻居更新，否则刚放下去时容易被判成"失去支撑"
-        # 注意：门/铁轨/告示牌这类多格或靠支撑的方块一律不进唤醒批次——
-        # 带邻居更新重写它们，等于当场告诉引擎"重新检查支撑"，写一半就掉了。
         wake = []
         for i in range(len(blocks)):
             low = blocks[i][3].lower()
             if any(kw in low for kw in cfg.WAKE_SKIP):
-                continue
+                continue               # 门/铁轨重写会当场掉落，直接跳过
             for kw in cfg.REDSTONE_HINTS:
                 if kw in low:
                     wake.append(i)
@@ -1273,12 +1367,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         side = self._pick_split_size(blocks)
         sections = self._build_sections(blocks, wake, ents, use_chunk, side)
         self.job = Job(pid, entry.rel, blocks, base, dim, ents, wake, sections, mobs)
-        self.job.parse_secs = float(getattr(self, "_parse_secs", 0.0) or 0.0)
         self.job.side = side
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
         self.job.speed_ticks = int(self.tick_speed) * 20
-        self.job.liquid_idx = []
+        self.job.liquid_idx = list(self._liquid_idx)
+        self.job.freeze = bool(self.freeze)
+        if self.job.freeze:
+            self._freeze_off()         # 先把上一次可能残留的规则还原，再按
+            self._freeze_on()          # 尽量把随机刻/昼夜/天气按住，结束恢复
         if ents:
             # 坐标 -> 原本该放什么方块，写实体后要拿它核对/还原
             table = {}
@@ -1309,6 +1406,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         est = self._estimate_secs(len(blocks), ents, wake, sections, mobs)
         if self.tick_mode:
             est += len(sections) * self.tick_speed
+        if self.freeze and self.job.liquid_idx:
+            est += self.freeze_secs
         bits.append(u"预计耗时 %.1f 秒" % est)
         self.tell(pid, u"§7" + u" · ".join(bits))
         self._prepare_section(self.job)
@@ -1392,7 +1491,6 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if bi is None:
                 return None
             frames = [None] * (cols * rows)
-            placed = 0
             for r in range(rows):               # r=0 顶行
                 for c in range(cols):
                     fc = c - (cols - 1) // 2
@@ -1400,33 +1498,45 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     fp = (ax + pv[0] * fc, ay + fr, az + pv[2] * fc)
                     sp = (fp[0] + v[0], fp[1] + v[1], fp[2] + v[2])
                     bi.SetBlockNew(sp, {"name": "minecraft:polished_andesite", "aux": 0}, 0, 0, True, False)
-                    # 展示框：不同版本 id 不一样（frame / item_frame），两个都试
-                    ok = False
-                    for fname in (u"minecraft:frame", u"minecraft:item_frame"):
-                        try:
-                            if bi.SetBlockNew(fp, {"name": fname,
-                                                   "aux": self._MAP_FACE[view]}, 0, 0, True, False):
-                                ok = True
-                                break
-                        except Exception:
-                            continue
-                    if ok:
+                    if bi.SetBlockNew(fp, {"name": "minecraft:frame",
+                                           "aux": self._MAP_FACE[view]}, 0, 0, True, False):
                         frames[r * cols + c] = fp
-                        placed += 1
-            self._wall_frames = placed
             # 观景位：墙中心前方 8 格（玩家站这里时整面墙区块都是加载的）
             view_pos = (ax - v[0] * 8, ay + rows / 2.0, az - v[2] * 8)
             return frames, view_pos
         except Exception:
-            tb = traceback.format_exc()
-            util.log(u"地图墙异常\n" + util.u(tb))
-            try:
-                self._wall_err = util.u(tb.strip().splitlines()[-1])
-            except Exception:
-                self._wall_err = u""
+            util.log_exc("build map wall")
             return None
 
     # ---- 速度档取等待时间
+    @staticmethod
+    def _inv_item(item, default=None):
+        """把 GetPlayerAllItems 的物品字典转成"能塞回背包"的字典
+
+        坑：GetPlayerAllItems 给的是 newItemName/newAuxValue 风格，
+        SetPlayerAllItems / SpawnItemToPlayerInv 要的是 itemName/count/auxValue。
+        两套键名混用引擎只会丢一行 WARNING（spawn item dict to inv failed!），
+        物品当场消失，代码还毫不知情 —— 所以统一从这里过一道。
+        """
+        d = item if isinstance(item, dict) else {}
+        name = d.get("itemName") or d.get("newItemName") or default
+        if not name:
+            return None
+        try:
+            cnt = int(d.get("count") or 1)
+        except (TypeError, ValueError):
+            cnt = 1
+        try:
+            aux = int(d.get("auxValue", d.get("newAuxValue", 0)) or 0)
+        except (TypeError, ValueError):
+            aux = 0
+        out = {"itemName": name, "count": max(1, cnt), "auxValue": aux}
+        ud = d.get("userData")
+        if isinstance(ud, dict) and ud:
+            out["userData"] = ud
+        return out
+
+
     def _map_zone_wait(self):
         """巡逻每个点停多少 tick"""
         if self.map_speed >= 2:
@@ -1956,14 +2066,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         """
         if use_chunk is None:
             use_chunk = self.chunk
-        # 水/岩浆现在就是普通方块：跟着所属分区按顺序写，没有"最后统一放液体"这一步
-        # （那一步要先 TP 回结构中心、还要守着水不流，区块没加载时极易把引擎写崩）。
-        self._liquid_idx = []
+        # 液体（水/岩浆）不进分区流程：全部固体写完、实体写完，最后统一一次性放水。
+        # 先放水再放方块 = 水先流开、方块再插进去，湖就成了一坨岩浆糕。
+        liq = [i for i in _range(len(blocks)) if blocks[i][3] in cfg.LIQUID_BLOCKS]
+        self._liquid_idx = liq
+        liqset = set(liq)
         size = max(1, int(side or cfg.SPLIT_SIZE))
         # 自适应边长被放大（>16）本身就是"这是个该分区的大结构"的信号：
         # 不分区就没人跟着 TP，768 格外的区块根本没加载，写多少失败多少。
         if not (self.split or self.tick_mode or use_chunk or size > cfg.SPLIT_SIZE):
-            blk = [i for i in _range(len(blocks))]
+            blk = [i for i in _range(len(blocks)) if i not in liqset]
             return [{"blocks": blk,
                      "wake": wake,
                      "ents": _range(len(ents)),
@@ -1980,9 +2092,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             return g
 
         for i in _range(len(blocks)):
+            if i in liqset:
+                continue
             b = blocks[i]
             group(b[0], b[2])["blocks"].append(i)
         for i in wake:
+            if i in liqset:
+                continue
             b = blocks[i]
             group(b[0], b[2])["wake"].append(i)
         for i in _range(len(ents)):
@@ -2167,13 +2283,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def on_tick(self, args=None):
         self._manual_fix_tick()
-        self._release_dead()
         job = self.job
-        if job is not None and job.tick % 200 == 0:
-            # 每 10 秒一条路标：崩了以后能看出停在哪个阶段
-            util.log(u"tick t=%d phase=%s ok=%d fail=%d sec=%d/%d" %
-                     (job.tick, job.phase, job.ok, job.fail, job.sec_i,
-                      len(job.sections)))
         if job is None:
             if self._bg is not None:
                 self._poll_bg()
@@ -2196,6 +2306,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._clear_areas(job)
             self.job = None
             self.tp_route = None
+            self._freeze_off()
             self._tip_raw(u"")
             self.tell(job.pid, u"§c放置中断：§f" +
                       util.short(util.u(tb.strip().splitlines()[-1]), 54))
@@ -2205,6 +2316,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         comp = self._blocks()
         if comp is None:
             self.job = None
+            self._freeze_off()
             self.tell(job.pid, u"§c取不到方块组件（CreateBlockInfo 返回空）")
             self.push(job.pid, self._page)
             return
@@ -2231,12 +2343,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._step_items(job)
         elif job.phase == "mobs":
             self._step_mobs(job)
+        elif job.phase == "liquid":
+            self._step_liquid(job, comp)
+        elif job.phase == "seal":
+            self._step_seal(job, comp)
         else:
             job.phase = "done"
 
         if job.phase == "done":
-            util.log(u"phase done -> finish, blocks=%d cursor=%d sections=%d" %
-                     (len(job.blocks), len(job.sections), len(job.sections)))
             self._finish(job)
 
     def _place_one(self, comp, pos, name, aux, states, dim, update_neighbors):
@@ -2269,9 +2383,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             return False
         if states:
-            # 老版本引擎不认 block 里的 states 时，这一次补写就是唯一生效路径。
-            # （高频重试的场景要传 states=None，方块字典里已经带状态了，
-            #   再补一次等于多排一个方块刻，几万格水连补几秒会把引擎顶爆）
+            # 老版本引擎不认 block 里的 states 时，这一次补写就是唯一生效路径
             try:
                 self._states().SetBlockStates(pos, states, dim)
             except Exception:
@@ -2587,21 +2699,41 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.retry_cursor = 0
         job.item_queue = []
         if job.sec_i >= len(job.sections):
-            # 所有分区跑完 -> 实体 -> 收尾
+            # 所有分区跑完 -> 实体 -> 液体 -> 守水 -> 收尾
             self._final_phase(job)
             return
         job.phase = "blocks"
         self._prepare_section(job)
 
     def _final_phase(self, job):
-        """分区全部跑完后的收尾：只剩实体，然后完成
+        """分区全部跑完后的收尾顺序：实体 -> 液体 -> 守水 -> 完成
 
-        水/岩浆已经跟着各自分区按普通方块写完了；没有"最后统一放液体"，
-        也没有守水/补水——那两步都要在区块没加载时硬写方块，会把引擎写崩。
+        液体刻意排在最后：先放固体骨架，水灌进去才有"池底池壁"接着，
+        否则水会顺着还没放方块的地方先流成一片。
         """
         if job.mobs and job.mob_cursor < len(job.mobs):
             job.phase = "mobs"
             return
+        if job.liquid_idx and job.liq_cursor < len(job.liquid_idx):
+            if job.phase != "liquid":
+                job.phase = "liquid"
+                job.seal_until = 0        # 液体全放完后再算守护截止时间
+                if not job.liq_armed:
+                    # 液体可能铺满整个结构，而人还停在最后一个分区：
+                    # 先回结构中心把区块带起来，否则最后这一批水会写不进去
+                    job.liq_armed = True
+                    self._tp_structure_center(job)
+                    job.waiting = True
+                    job.wait_until = job.tick + (6 if self.turbo else 30)
+                    job.note = u"§9准备放液体（%d 格）" % len(job.liquid_idx)
+            return
+        if job.freeze and job.sealed:
+            if not job.seal_until:
+                job.seal_until = job.tick + int(max(0.0, self.freeze_secs) * 20)
+                job.seal_cursor = 0
+            if job.tick < job.seal_until:
+                job.phase = "seal"
+                return
         job.phase = "done"
 
     def _step_mobs(self, job):
@@ -2672,7 +2804,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._final_phase(job)
 
     def _tp_structure_center(self, job):
-        """把人送回结构中心（调试/自检用，导入流程已不再调用）
+        """把人送回结构中心：放液体和守水都在结构内部，区块得先加载
 
         坐标范围用抽样算（大结构几十万方块，全量扫一遍会卡一下；抽样够用）。
         """
@@ -2694,6 +2826,74 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.factory.CreatePos(job.pid).SetPos((cx, cy, cz))
         except Exception:
             util.log_exc("tp structure center")
+
+    def _step_liquid(self, job, comp):
+        """最后统一放液体（水 / 岩浆）
+
+        所有固体方块都到位之后才灌水：池底、池壁已经实心，水就只会在原地待着。
+        每格放过之后记下坐标和方块字典，守护阶段拿它原地重写（不放新东西，只按住）。
+        """
+        idx = job.liquid_idx
+        total = len(idx)
+        bx, by, bz = job.base
+        dim = job.dim
+        blocks = job.blocks
+        budget = self._write_budget()
+        limit = max(cfg.WRITE_BATCH_MIN, job.batch)
+        t0 = time.time()
+        n = 0
+        sealed = job.sealed
+        while job.liq_cursor < total and n < limit:
+            i = idx[job.liq_cursor]
+            job.liq_cursor += 1
+            n += 1
+            x, y, z, name, aux, states = blocks[i]
+            pos = (bx + x, by + y, bz + z)
+            blk = {"name": name, "aux": int(aux)}
+            if states:
+                blk["states"] = states
+            try:
+                if self._place_block(comp, pos, blk, states, dim, False):
+                    job.liq_ok += 1
+                else:
+                    job.liq_fail += 1
+            except Exception:
+                job.liq_fail += 1
+            sealed.append((pos, blk))
+            if n % 8 == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        if job.liq_cursor >= total:
+            self._final_phase(job)
+
+    def _step_seal(self, job, comp):
+        """守护液体：按环形游标把放过的水原位重写一遍
+
+        引擎放下方块后仍会按"有没有支撑"重新算液体，池子边缘就开始往旁边渗。
+        守护窗口内反复重写，等于把这几秒的时间里每一格水都按住不动；
+        每 tick 只花 FREEZE_BUDGET_MS，液体再多也不会卡。
+        """
+        items = job.sealed
+        n = len(items)
+        if not n:
+            job.phase = "done"
+            return
+        budget = cfg.FREEZE_BUDGET_MS
+        t0 = time.time()
+        done = 0
+        while done < n:                      # 最多转一圈，避免液体很少时空转
+            i = job.seal_cursor % n
+            pos, blk = items[i]
+            job.seal_cursor = (i + 1) % n
+            done += 1
+            try:
+                self._place_block(comp, pos, blk, blk.get("states"), job.dim, False)
+            except Exception:
+                pass
+            if done % 16 == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        job.seal_pass += 1
+        if job.tick >= job.seal_until:
+            job.phase = "done"
 
     def _sec_box(self, job, sec):
         """分区的绝对包围盒 (x1,y1,z1,x2,y2,z2)"""
@@ -2791,10 +2991,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if big:
                 wait = max(1, int(self.big_wait * 20))
             elif sec is not None and sec.get("pf"):
-                # 这区早在上一区写的时候就挂上常加载了，区块已经加载好。
-                # 急速模式下它比普通 TP 还该快——以前这里排在 turbo 判断前面，
-                # 反而让"预取好的区"等得比没预取的更久（白等 8 tick）。
-                wait = 2 if self.turbo else max(3, cfg.PREFETCH_WAIT)
+                # 这区早在上一区写的时候就挂上常加载了，区块已经加载好
+                wait = max(3, cfg.PREFETCH_WAIT)
             elif self.turbo:
                 wait = max(2, cfg.TP_LOAD_WAIT_TURBO // 2)   # 急速：0.1 秒就走
             elif job.last_fail == 0 and job.ok > 0:
@@ -3004,24 +3202,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self._next_section(job)
 
     def _finish(self, job):
-        # 收尾每一步都打路标：万一引擎在收尾崩，日志里最后一行就是崩的位置。
-        # 用户报"导入一结束就崩"，没有路标就只能瞎猜。
-        util.log(u"finish[1/6] begin ok=%d fail=%d ent=%d" %
-                 (job.ok, job.fail, job.ent_ok))
         self.job = None
         self.tp_route = None
-        try:
-            self._clear_areas(job)
-        except Exception:
-            util.log_exc("finish clear areas")
-        util.log(u"finish[2/6] areas cleared")
-        util.log(u"finish[3/6] rules untouched (没有时停)")
-        try:
-            self._tip_raw(u"")          # 小栏清空，别把最后一行卡在屏幕上
-        except Exception:
-            util.log_exc("finish tip")
-        util.log(u"finish[4/6] tip cleared")
-        if job.ok == 0:
+        self._clear_areas(job)
+        self._freeze_off()          # 恢复导入期间按住的游戏规则（随机刻/昼夜/天气）
+        self._tip_raw(u"")          # 小栏清空，别把最后一行卡在屏幕上
+        if job.ok == 0 and not job.liq_ok:
             self.tell(job.pid, u"§c放置失败：%d 个方块全部没写进去" % job.fail)
             if job.err:
                 self.tell(job.pid, u"§7原因：§f" + job.err)
@@ -3051,60 +3237,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 msg += u" §7· 实体 §f%d" % job.mob_ok
                 if job.mob_fail:
                     msg += u" §c(%d 失败)" % job.mob_fail
+            if job.liq_ok or job.liq_fail:
+                msg += u" §7· 液体 §f%d" % job.liq_ok
+                if job.liq_fail:
+                    msg += u"§7(失败 %d)" % job.liq_fail
             self.tell(job.pid, msg)
-            # 把时间拆开：慢了到底是"写不动"还是"一直在等区块"，一眼能看出来
-            try:
-                total_s = job.tick / 20.0
-                work_s = job.work_ticks / 20.0
-                wait_s = max(0.0, total_s - work_s)
-                self.tell(job.pid, u"§7耗时 §f%.1fs§7 = 解析 §f%.1fs§7 + 写入 §f%.1fs§7 + 等区块 §f%.1fs"
-                                   u" §8(%.0f 块/秒)" %
-                          (total_s + job.parse_secs, job.parse_secs, work_s, wait_s,
-                           job.ok / work_s if work_s > 0.05 else 0.0))
-            except Exception:
-                pass
+            if job.sealed and not job.freeze:
+                self.tell(job.pid, u"§7冻结已关（§f/structureim freeze on§7 可让水不再乱跑）")
             self.tell(job.pid, u"§7基准位置：§f%d, %d, %d" % job.base)
-            util.log(u"finish[5/6] summary sent, map_mode=%s" % bool(self.map_mode))
             if self.map_mode:
-                # 地图阶段出任何岔子都只报错，不能把已经导好的结构拖成「放置中断」
-                try:
-                    self._queue_maps(job)
-                except Exception:
-                    tb = traceback.format_exc()
-                    util.log(u"地图墙异常\n" + util.u(tb))
-                    self.map_queue = None
-                    self.tell(job.pid, u"§c地图墙启动失败：§f" +
-                              util.short(util.u(tb.strip().splitlines()[-1]), 48))
-            util.log(u"finish[6/6] done, queue=%s" % (self.map_queue is not None))
+                self._queue_maps(job)
         self.push(job.pid, self._page)
-        # 大结构（几十万块）的 blocks / sections / sealed 是几百万个 Python 对象，
-        # 一次性丢引用会在同一 tick 里触发长时间 GC，引擎看门狗直接判卡死。
-        # 先挂在这里，之后每个 tick 放掉一批（on_tick 里的 _release_dead）。
-        self._dead = job
-
-    def _release_dead(self):
-        """每 tick 只放掉一部分大列表，避免收尾瞬间 GC 停顿被引擎判成卡死"""
-        job = getattr(self, "_dead", None)
-        if job is None:
-            return
-        try:
-            blocks = getattr(job, "blocks", None) or []
-            n = len(blocks)
-            if n > 20000:
-                del blocks[-20000:]          # 从尾巴上放，分 30 批放完（60 万块）
-                return
-            job.blocks = []
-            for name in ("sections", "retry", "wake",
-                         "blk_at", "mobs", "ents", "wake"):
-                if hasattr(job, name):
-                    try:
-                        setattr(job, name, [])
-                    except Exception:
-                        pass
-            self._dead = None
-            util.log(u"finish: 大对象已释放")
-        except Exception:
-            self._dead = None
 
     # ------------------------------------------------------------ 客户端来的请求
     def on_req(self, args):
@@ -3198,7 +3341,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def _apply_opt(self, key, delta):
         if key == u"fast":
-            # 一键提速：和 /structureim fast 完全一样
+            # 一键提速：后台解析 + 邻区并行 + 急速 + 满预算
             self.threads = max(2, cfg.THREADS_DEFAULT)
             self.parallel = max(3, cfg.PARALLEL_DEFAULT)
             self.turbo = True
@@ -3238,6 +3381,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _opts_payload(self):
         """设置页要显示的一堆数值（每一行一个）"""
         return {
+            "split": 1 if self.split else 0,
+            "tick": 1 if self.tick_mode else 0,
+            "chunk": 1 if self.chunk else 0,
+            "map": 1 if self.map_mode else 0,
+            "turbo": 1 if self.turbo else 0,
             "maparea": 1 if self.map_area else 0,
             "threads": int(self.threads),
             "parallel": int(self.parallel),

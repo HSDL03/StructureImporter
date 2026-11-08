@@ -25,16 +25,18 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "mapspeed", "maparea", "turbo", "fast",
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "map", "turbo", "fast",
                "manual", "help2"]
+
+# ---------------------------------------------------------------- 存档版本
+# 改过默认值的选项要用版本号迁移，否则老存档会一直带着旧默认（比如极速档）。
+CFG_VERSION = 1
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
 EXTRA_KEY = "si_dir"
-# 配置版本：低于这个值的存档会被迁移（2 = 地图画速度档强制回到「稳」）
-CFG_VERSION = 2
 
 # ---------------------------------------------------------------- 分区导入
 SPLIT_DEFAULT = False     # 默认关，用 /structureim split on 或界面按钮打开
@@ -100,17 +102,17 @@ MAP_GIVE_WAIT = 40        # 发地图：TP 到单元中心后等多少 tick 再 
 MAP_HOLD_SECS = 4          # 地图放进玩家主手停留几秒让引擎渲染地形（否则挂墙是空白图）
 MAP_TA_RADIUS = 4          # 旧版圆形常加载半径（已改用方形 _map_ta_add，仅留作对照）
 MAP_TA_WAIT = 60           # 常加载区块挂上后等多少 tick 让区块真正加载完再 give
-MAP_AREA_SQUARE = True     # 常加载形状：True 方形（一次盖住整幅）/ False 圆形（老写法，兼容用）
 
 # ---------------------------------------------------------------- 地图画速度档
 # 慢的根源：每张图都要「挂常加载 -> 等 3 秒 -> TP 九个区、每区停 3 秒 -> 拿图 4 秒」。
 # 三处提速：①常加载改成方形精确覆盖整幅（圆会切掉四角，所以以前得靠巡逻补）
 #          ②下一张图的常加载在画当前图时提前挂好（等待与绘制重叠）
 #          ③每区等待从"秒级"降到"tick 级"（区块本来就都加载着）
-# 0 = 稳（默认：老的圆形常加载 + 每区按秒等，最保险）  1 = 快  2 = 极速
-# 挂画阶段一旦报错就留在 0，别开 1/2：快档的等待被压到 tick 级，区块没跟上就会缺图/报错
+# 0 = 稳（旧行为，最保险）  1 = 快（默认）  2 = 极速（可能有缺角，缺就降档）
 MAP_SPEED_DEFAULT = 0
 MAP_SQ_Y = 40              # 方形常加载的纵向厚度（区块只看 xz，给够就行）
+MAP_AREA_DEFAULT = 1       # 常加载形状：1 = 方形（精确盖住整幅，快档前提）
+MAP_AREA_RADIUS = 4        # 圆形常加载半径（0 档 / 对照用；圆角盖不满要巡逻补）
 MAP_TA_WAIT_FAST = 30      # 快档：本张图第一次挂常加载后等多少 tick
 MAP_ZONE_WAIT = 10         # 快档：巡逻每个区停多少 tick
 MAP_ZONE_WAIT_FAST = 4     # 极速档：每区停多少 tick
@@ -141,13 +143,9 @@ REDSTONE_HINTS = (
     "dropper", "hopper", "copper_bulb", "target",
     "note_block", "daylight_detector", "sculk_sensor", "crafter",
 )
-# 这些方块绝对不能进"红石唤醒"批次：它们是**多格结构/需要支撑**的方块，
-# 带邻居更新重写一次就会当场判定失去支撑然后掉落（门只剩半扇、铁轨弹飞）。
-# 真机踩坑：门在自己的位置被重写后，另一半还没写上去 -> 整扇门变成掉落物。
-WAKE_SKIP = ("door", "gate", "rail", "bed", "tall_grass", "tallgrass",
-             "sunflower", "lilac", "rose_bush", "peony", "vine", "ladder",
-             "sign", "banner", "carpet", "snow_layer", "candle", "chain")
-
+# 门/栅栏门/铁轨这类多格或依赖支撑的方块，绝不能进唤醒批次：
+# 带邻居更新整块重写一次，引擎会认为它失去支撑 —— 当场掉落（整扇门消失）。
+WAKE_SKIP = ("door", "gate", "rail", "bed", "piston_head", "piston_arm")
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
 
@@ -171,11 +169,18 @@ SKIP_BLOCKS = (
     "minecraft:fire_block", "minecraft:unknown", "minecraft:deny",
     "minecraft:allow", "minecraft:border_block", "minecraft:client_request_placeholder_block",
 )
-# 液体：现在按普通方块写（不再单独排队到最后），这两个名字只用于统计/识别
+# 液体：单独排队到最后写（先放固体再放水，水才不会在方块没到位时到处流）
 LIQUID_BLOCKS = ("minecraft:water", "minecraft:lava")
 # 支持含水的方块（states 里有 waterlogged 就自动带水）
 WATERLOG_KEYS = ("waterlogged",)
 
+# ---------------------------------------------------------------- 冻结（水不乱跑）
+# 保留能力但默认关：回滚后的基线不主动改游戏规则（随机刻/昼夜/天气），
+# 需要时用 /structureim freeze on 手动开。
+FREEZE_DEFAULT = False    # 默认不动游戏规则
+FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
+FREEZE_SECS_MAX = 60.0
+FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒回写
 
 # ---------------------------------------------------------------- 物品 NBT 安全阈值
 # 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，
