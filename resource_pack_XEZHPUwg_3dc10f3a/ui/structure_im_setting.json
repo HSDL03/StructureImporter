@@ -635,7 +635,7 @@
         "font_scale_factor": 0.64,
         "font_size": "normal",
         "shadow": true,
-        "text": "分区等待降到 1 tick，最快但有卡顿风险",
+        "text": "预算翻倍不等区块，最快但可能轻微卡",
         "text_alignment": "left"
     },
     "set_bg": {

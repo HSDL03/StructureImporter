@@ -8,7 +8,7 @@
         },
         {
             "type": "textPage",
-            "content": "§e巡图参数（地图画）\n§f/structureim znum <1-9>\n§f每幅地图巡几个分区，默认 3\n§f（实测 3 区即画满；缺角就调大）\n\n§f/structureim zwait <1-30>\n§f每区停留秒数，默认 3\n§f设置存档保存，重启不丢\n\n§e其它\n§f/structureim split <开|关>\n§f/structureim selftest\n§f/structureim manual §f—— 聊天框版教程"
+            "content": "§e巡图参数（地图画）\n§f/structureim znum <1-9>\n§f每幅地图巡几个分区，默认 3\n§f（实测 3 区即画满；缺角就调大）\n\n§f/structureim zwait <1-30>\n§f每区停留秒数，默认 3\n§f设置存档保存，重启不丢\n\n§e其它\n§f/structureim budget <2-20>\n§f每 tick 写入预算（毫秒），默认 7\n§f越大越快越容易卡，写入量自动调速\n\n§f/structureim split <开|关>\n§f/structureim selftest\n§f/structureim manual §f—— 聊天框版教程"
         }
     ]
 }

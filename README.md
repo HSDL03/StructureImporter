@@ -102,6 +102,7 @@
 | `/structureim znum <1-9>` | 地图画：每幅巡几个分区（默认 3） |
 | `/structureim zwait <1-30>` | 地画画：每区停留秒数（默认 3） |
 | `/structureim bigwait <1-30>` | 跨行远传后降速秒数（默认 4） |
+| `/structureim budget <2-25>` | 每 tick 写方块的时间预算（ms，默认 12；越大越快越卡，写入量本身会自动调速） |
 | `/structureim manual` | 聊天框版图文教程 |
 | `/structureim selftest` | 环境自检 |
 

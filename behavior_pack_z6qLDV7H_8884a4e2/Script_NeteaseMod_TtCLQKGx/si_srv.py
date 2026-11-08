@@ -2,6 +2,7 @@
 """服务端：自定义指令、目录扫描、分批放置"""
 
 import math
+import time
 import traceback
 
 import mod.server.extraServerApi as serverApi
@@ -88,6 +89,7 @@ HELP = [
     u"§f/structureim zwait <1-30> §7巡图每区停留秒数（默认3）",
     u"§f/structureim znum <1-9> §7每幅图巡几个区（默认3，实测3区即画满）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
+    u"§f/structureim budget <2-20> §7每tick写入预算ms（默认7，越大越快越卡；急速自动翻倍）",
     u"§f/structureim selftest §7环境自检",
     u"§f/structureim manual §7看分步教程（也可右键使用说明书物品）",
 ]
@@ -146,6 +148,13 @@ class Job(object):
         self.retry = []
         self.retry_cursor = 0
         self.retry_pass = 0
+        # 写入节流：每 tick 可写的块数（按实测吞吐自适应，越跑越贴机器）
+        self.batch = min(cfg.BATCH, cfg.WRITE_BATCH_START)
+        self.probe = cfg.WRITE_PROBE_STEP      # 多少块探一次时间（按单块耗时自动收紧）
+        # 上一分区的失败数：为 0 说明区块跟得上 -> 下一区少等一点；有失败就多等
+        self.ok_mark = 0
+        self.fail_mark = 0
+        self.last_fail = 0
 
 
 class SiServerSystem(serverApi.GetServerSystemCls()):
@@ -165,6 +174,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zone_secs = cfg.TP_ZONE_SECS   # 巡图每区停留秒数（可 /structureim zwait 调）
         self.zones_n = 3                    # 每幅图实际巡几个区（1~9，可 /structureim znum 调）
         self.big_wait = cfg.TP_BIG_WAIT / 20.0   # 跨行远传后降速秒数（/structureim bigwait 调）
+        self.budget = cfg.WRITE_BUDGET_MS        # 每 tick 写方块的时间预算（ms，/structureim budget 调）
+        self.last_bpt = 0.0                      # 上次实测「每 tick 写多少块」，用于预估耗时
         self._page = 0
         self.map_queue = None    # 导入完成后逐个发的地图
         self._map_known = set()  # 玩家背包里已有的地图 uuid（用于找新图编号）
@@ -293,6 +304,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zone_secs = cfg.TP_ZONE_SECS
         self.zones_n = 3
         self.big_wait = cfg.TP_BIG_WAIT / 20.0
+        self.budget = cfg.WRITE_BUDGET_MS
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
             if isinstance(raw, dict):
@@ -328,6 +340,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 except (TypeError, ValueError):
                     pass
                 try:
+                    bg = float(util.u(raw.get("budget")))
+                    self.budget = max(2.0, min(20.0, bg))
+                except (TypeError, ValueError):
+                    pass
+                try:
                     speed = int(util.u(raw.get("speed")))
                     self.tick_speed = max(cfg.SPEED_MIN, min(cfg.SPEED_MAX, speed))
                 except (TypeError, ValueError):
@@ -355,7 +372,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "turbo": util.b(u"1" if self.turbo else u"0"),
                  "zsecs": util.b(str(self.zone_secs)),
                  "znum": util.b(str(self.zones_n)),
-                 "bigwait": util.b(str(self.big_wait))})
+                 "bigwait": util.b(str(self.big_wait)),
+                 "budget": util.b(str(self.budget))})
         except Exception:
             util.log_exc("save config")
 
@@ -406,7 +424,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§e三、地图墙（地图画模式开时自动生效）：")
         self.tell(pid, u"§7  · 导完自动搭墙并给你编号地图，凑近看就是整幅画")
         self.tell(pid, u"§7  · 巡图参数：§fznum <1-9> §7每幅巡几区（默认3）、§fzwait <1-30> §7每区停几秒（默认3）")
-        self.tell(pid, u"§e四、其它开关：§fsplit 开/关 §7分区、§fturbo §7急速、§fselftest §7自检")
+        self.tell(pid, u"§e四、调速：§fbudget <2-20> §7每 tick 写入预算（ms，越大越快越卡，默认7）")
+        self.tell(pid, u"§7  写入量会按机器实测速度自动调，卡就调小、闲着就调大")
+        self.tell(pid, u"§e五、其它开关：§fsplit 开/关 §7分区、§fturbo §7急速、§fselftest §7自检")
         self.tell(pid, u"§7详情输入 §f/structureim §7看完整命令列表。")
 
     def on_command(self, args):
@@ -462,6 +482,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_zwait(pid, a1)
         elif action == u"bigwait":
             self.cmd_bigwait(pid, a1)
+        elif action in (u"budget", u"tick"):
+            self.cmd_budget(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -558,6 +580,22 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._save()
         self.tell(pid, u"§a跨行远传后降速：§f%.1f 秒" % v)
 
+    def cmd_budget(self, pid, text):
+        """每 tick 写方块的时间预算（ms）——导入快慢/卡不卡的直接旋钮"""
+        try:
+            v = float((text or u"").strip())
+        except ValueError:
+            self.tell(pid, u"§e用法：/structureim budget <2-20> §7当前 %.0f ms%s" %
+                      (self.budget, u"（急速模式下自动翻倍）" if self.turbo else u""))
+            return
+        if not (2.0 <= v <= 20.0):
+            self.tell(pid, u"§c范围 2~20 毫秒")
+            return
+        self.budget = v
+        self._save()
+        self.tell(pid, u"§a每 tick 写入预算：§f%.0f ms §7（约 %d 块/秒起，实际按机器自动调速）" %
+                  (v, int(cfg.BATCH * 20)))
+
     def cmd_znum(self, pid, text):
         try:
             v = int((text or u"").strip())
@@ -603,7 +641,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§6放置中：§f%s" % (u"是" if self.job else u"否"))
         self.tell(pid, u"§6分区导入：§f%s §7（每区 %d 格）" %
                   (u"开" if self.split else u"关", cfg.SPLIT_SIZE))
-        self.tell(pid, u"§6每 tick：§f%d 方块" % cfg.BATCH)
+        self.tell(pid, u"§6每 tick：§f%.0f ms 预算§7（约 %d 块起，自动调速）" %
+                  (self._write_budget(), (self.job.batch if self.job else cfg.BATCH)))
 
     def cmd_test(self, pid):
         """在身前写一块金块，用来确认 SetBlockNew 本身是否可用"""
@@ -1005,12 +1044,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         防缺失模式下每个分区还要先等区块加载。
         实际速度受世界卡顿影响，仅供预期，T显里会显示实测速度。
         """
-        rate = max(1, cfg.BATCH) * 20.0
+        if self.last_bpt > 0:
+            rate = self.last_bpt * 20.0     # 上次真机实测的吞吐，比名义值准
+        else:
+            rate = max(1, cfg.BATCH) * 20.0
+            if self.turbo:
+                rate *= 2.0
         secs = n_blocks / rate + len(wake) / rate
         secs += len(ents) / float(max(1, cfg.BATCH_ENT) * 20)
         secs += len(mobs) / float(max(1, cfg.BATCH_MOB) * 20)
         if self.tick_mode:
             secs += len(sections) * self.tick_speed
+        elif self.turbo and len(sections) > 1:
+            secs += len(sections) * (cfg.TP_LOAD_WAIT_TURBO // 2) / 20.0
         return max(0.1, secs)
 
     def _build_sections(self, blocks, wake, ents, use_chunk=None):
@@ -1257,7 +1303,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         返回是否成功——SetBlockNew 在未加载的区块会静默返回 False，
         不记下来就没法重试（大结构边缘区块的"小块导入失败"就是它）。
         """
-        block = {"name": name, "aux": int(aux)}
+        return self._place_block(comp, pos, {"name": name, "aux": int(aux)},
+                                 states, dim, update_neighbors)
+
+    def _place_block(self, comp, pos, block, states, dim, update_neighbors):
+        """写一个方块（block 字典可复用：同一分区里同名同 aux 的方块共用一个）"""
         try:
             ok = comp.SetBlockNew(pos, block, 0, dim, True, bool(update_neighbors))
         except TypeError:
@@ -1271,6 +1321,45 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 pass
         return bool(ok)
 
+    def _write_budget(self):
+        """本 tick 允许花在写方块上的毫秒数
+
+        预算是上限不是目标：写满就收手，把 tick 剩下的时间还给引擎渲染，
+        这样一 tick 写多少完全由机器实测速度决定，帧率不会被导入拖崩。
+        """
+        b = self.budget
+        if self.turbo:
+            b = max(b, cfg.WRITE_BUDGET_MS_TURBO)
+        return b
+
+    def _tune(self, job, written, used_ms, hit_time):
+        """按实测吞吐把下一 tick 的批量调到刚好贴着预算（自适应）"""
+        if written <= 0 or used_ms <= 0.0:
+            return
+        rate = written / used_ms                       # 块 / 毫秒
+        # 探针间隔按单块耗时收紧：保证"超预算"最多多写 1/8 个预算的量
+        cost = used_ms / written
+        if cost > 0:
+            job.probe = max(1, min(64, int(self._write_budget() * 0.12 / cost)))
+        target = int(rate * self._write_budget())
+        cap = cfg.WRITE_BATCH_MAX * (2 if self.turbo else 1)
+        if hit_time:
+            # 撞到时间墙：压到目标值，宁可少写也不掉帧
+            job.batch = max(cfg.WRITE_BATCH_MIN, min(job.batch, target))
+        elif written >= job.batch:
+            # 写满批量还有余量：试探上调（最多翻倍，防止一次冲太猛）
+            job.batch = max(cfg.WRITE_BATCH_MIN,
+                            min(cap, max(job.batch, min(target, job.batch * 2))))
+
+    def _sec_tell(self, job, text):
+        """分区级提示节流：几百个分区时只报里程碑，聊天框刷屏本身也掉帧"""
+        n = len(job.sections)
+        if n > 40:
+            step = max(1, n // 10)
+            if job.sec_i % step != 0 and job.sec_i != n - 1:
+                return
+        self.tell(job.pid, text)
+
     def _step_blocks(self, job, comp):
         sec = self._section(job)
         if sec is None:
@@ -1283,15 +1372,26 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         dim = job.dim
         blocks = job.blocks
 
-        while job.cursor < total and written < cfg.BATCH:
+        budget = self._write_budget()
+        limit = max(cfg.WRITE_BATCH_MIN, job.batch)
+        t0 = time.time()
+        hit_time = False
+        bdict = {}                         # (name, aux) -> 方块字典，本区复用
+
+        while job.cursor < total and written < limit:
             i = idx[job.cursor]
             x, y, z, name, aux, states = blocks[i]
             job.cursor += 1
             written += 1
             try:
+                key = (name, aux)
+                blk = bdict.get(key)
+                if blk is None:
+                    blk = {"name": name, "aux": int(aux)}
+                    bdict[key] = blk
                 # 建造阶段不触发邻居更新：否则红石/火把会边放边被弹掉
-                if self._place_one(comp, (bx + x, by + y, bz + z),
-                                   name, aux, states, dim, False):
+                if self._place_block(comp, (bx + x, by + y, bz + z),
+                                     blk, states, dim, False):
                     job.ok += 1
                 else:
                     job.fail += 1
@@ -1303,9 +1403,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 job.retry.append(i)
                 if job.err is None:
                     job.err = util.u(traceback.format_exc().strip().splitlines()[-1])
+            # 每写一小撮探一次时间：到点收手，本 tick 余下时间还给引擎
+            if written % job.probe == 0 and \
+                    (time.time() - t0) * 1000.0 >= budget:
+                hit_time = True
+                break
+
+        self._tune(job, written, (time.time() - t0) * 1000.0, hit_time)
+        if written:
+            self.last_bpt = (written if self.last_bpt <= 0
+                             else self.last_bpt * 0.85 + written * 0.15)
 
         if job.cursor < total:
-            if job.tick % 20 == 0:
+            # 聊天框进度降到 3 秒一条（tip 仍是实时的），否则百来条消息本身掉帧
+            if job.tick % 60 == 0:
                 done = job.ok + job.fail
                 pct = int(done * 100 / job.total) if job.total else 100
                 self.tell(job.pid, u"§7放置中 %d%%（%d/%d）%s" %
@@ -1338,7 +1449,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         bx, by, bz = job.base
         total = len(job.retry)
         still = []
-        while job.retry_cursor < total and n < cfg.BATCH:
+        # 重试同样按时间预算收口：失败块重写也走 SetBlockNew，一 tick 塞太多照样卡
+        budget = self._write_budget()
+        limit = max(cfg.WRITE_BATCH_MIN, job.batch)
+        t0 = time.time()
+        while job.retry_cursor < total and n < limit:
             i = job.retry[job.retry_cursor]
             job.retry_cursor += 1
             n += 1
@@ -1352,6 +1467,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     still.append(i)
             except Exception:
                 still.append(i)
+            if n % cfg.WRITE_PROBE_STEP == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
         if job.retry_cursor < total:
             still.extend(job.retry[job.retry_cursor:])
         if still and len(still) < total and job.retry_pass < 5:
@@ -1434,6 +1551,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     def _next_section(self, job):
         self._drop_area(job)                 # 上一区的常加载区块用完就还
+        # 记录本区失败数：0 说明这台机器的区块跟得上，下一区可以少等一点；
+        # 有失败说明等得不够，下一区自动加长（等于按机器实测调速）
+        job.last_fail = job.fail - job.fail_mark
+        job.fail_mark = job.fail
+        job.ok_mark = job.ok
         job.sec_i += 1
         job.cursor = 0
         job.wake_cursor = 0
@@ -1530,16 +1652,24 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             big = tpd >= cfg.TP_BIG_JUMP
             if big:
                 wait = max(1, int(self.big_wait * 20))
+            elif self.turbo:
+                wait = max(2, cfg.TP_LOAD_WAIT_TURBO // 2)   # 急速：0.1 秒就走
+            elif job.last_fail == 0 and job.ok > 0:
+                # 上一区一块都没失败 -> 区块跟得上，等待砍到 1/3
+                wait = max(8, wait // 3)
+            else:
+                # 上一区有写不进的 -> 加长等待，比事后重试划算
+                wait = min(70, int(wait * 1.5))
             job.wait_until = job.tick + wait
             job.tp_wait = 0
             if len(job.sections) > 1:
                 if big:
-                    self.tell(job.pid, u"§e分区 %d/%d：§7跨行远传（§f%d 格§7），降速等区块 §f%.1f 秒 §7后恢复" %
-                              (job.sec_i + 1, len(job.sections), int(tpd), wait / 20.0))
+                    self._sec_tell(job, u"§e分区 %d/%d：§7跨行远传（§f%d 格§7），降速等区块 §f%.1f 秒 §7后恢复" %
+                                   (job.sec_i + 1, len(job.sections), int(tpd), wait / 20.0))
                 else:
-                    self.tell(job.pid, u"§7分区 %d/%d：%s等区块 §f%.1f 秒" %
-                              (job.sec_i + 1, len(job.sections),
-                               u"§f急速§7" if self.turbo else u"", wait / 20.0))
+                    self._sec_tell(job, u"§7分区 %d/%d：%s等区块 §f%.1f 秒" %
+                                   (job.sec_i + 1, len(job.sections),
+                                    u"§f急速§7" if self.turbo else u"", wait / 20.0))
             return
         if not job.tick_enabled:
             return
@@ -1568,14 +1698,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             # 急速模式：不按秒等，下一 tick 就开始（区块没跟上靠重试兜底）
             job.wait_until = job.tick + 1
             if len(job.sections) > 1:
-                self.tell(job.pid, u"§7分区 %d/%d：§f急速§7（不等区块，写失败自动重试）" %
-                          (job.sec_i + 1, len(job.sections)))
+                self._sec_tell(job, u"§7分区 %d/%d：§f急速§7（不等区块，写失败自动重试）" %
+                               (job.sec_i + 1, len(job.sections)))
         else:
             job.wait_until = job.tick + max(20, job.speed_ticks)
             if len(job.sections) > 1:
-                self.tell(job.pid, u"§7分区 %d/%d：常加载区块%s，等 §f%d 秒 §7后开始" %
-                          (job.sec_i + 1, len(job.sections),
-                           u"已添加" if ok else u"添加失败(继续尝试)", self.tick_speed))
+                self._sec_tell(job, u"§7分区 %d/%d：常加载区块%s，等 §f%d 秒 §7后开始" %
+                               (job.sec_i + 1, len(job.sections),
+                                u"已添加" if ok else u"添加失败(继续尝试)", self.tick_speed))
 
     def _tp_to_section(self, job):
         """玩家跟着正在导入的分区自动传送
@@ -1733,7 +1863,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         idx = sec["wake"]
         total = len(idx)
         bx, by, bz = job.base
-        while job.wake_cursor < total and n < cfg.BATCH:
+        # 这一阶段每个方块都要触发邻居更新，单块开销是普通写入的数倍：
+        # 只给半个预算，避免红石密集区一 tick 顶死主线程
+        budget = self._write_budget() * 0.5
+        limit = max(cfg.WRITE_BATCH_MIN, job.batch // 2)
+        t0 = time.time()
+        while job.wake_cursor < total and n < limit:
             x, y, z, name, aux, states = job.blocks[idx[job.wake_cursor]]
             job.wake_cursor += 1
             n += 1
@@ -1742,6 +1877,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                 name, aux, states, job.dim, True)
             except Exception:
                 pass
+            if n % 8 == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
         if job.wake_cursor >= total:
             if sec["ents"]:
                 job.phase = "ents"

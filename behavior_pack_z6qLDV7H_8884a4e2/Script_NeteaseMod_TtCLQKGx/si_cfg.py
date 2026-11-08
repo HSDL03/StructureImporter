@@ -26,7 +26,7 @@ CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
-               "zwait", "znum", "zsec", "bigwait", "manual", "help2"]
+               "zwait", "znum", "zsec", "bigwait", "budget", "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
@@ -50,7 +50,16 @@ MAX_ENTRIES = 400         # 最多收录多少个结构
 EXTS = (".mcstructure", ".nbt")
 
 # ---------------------------------------------------------------- 放置
-BATCH = 600               # 每 tick 写入多少方块
+BATCH = 600               # 每 tick 写入多少方块（自适应算法的起始值/上限参考）
+# ---------------------------------------------------------------- 写入节流（防卡）
+# 从"每 tick 固定写 N 块"改成"每 tick 固定时间预算"：机器快就多写、慢就少写，
+# 帧率不会再被单 tick 的写入量拖崩。耗时用实测吞吐反推下一 tick 的批量。
+WRITE_BUDGET_MS = 12.0         # 普通模式：每 tick 最多花多少毫秒写方块（≈旧版固定 600 块）
+WRITE_BUDGET_MS_TURBO = 20.0   # 急速模式：几乎榨满一 tick（50ms 里留 20ms 写）
+WRITE_BATCH_MIN = 24           # 单 tick 最少写多少（保证推进）
+WRITE_BATCH_MAX = 3000         # 普通模式单 tick 上限（急速自动 ×2）
+WRITE_BATCH_START = 200        # 起步批量：慢机不会第一 tick 就卡 200ms，三几 tick 自己涨上去
+WRITE_PROBE_STEP = 24          # 探时间的初始间隔（之后按实测单块耗时自动收紧）
 MAX_BLOCKS = 2000000      # 单结构方块上限；超大的靠分块模式切成小块逐个导入，不再怕卡
 BIG_FILE_BLOCKS = 150000  # 超过这个数就自动强制分块模式
 TP_FOLLOW = True          # 导入时玩家自动跟随当前分区传送（保证区块加载）
