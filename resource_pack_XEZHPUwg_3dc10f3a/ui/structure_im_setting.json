@@ -6,7 +6,7 @@
         "anchor_to": "center",
         "size": [
             "620px",
-            "250px"
+            "310px"
         ],
         "offset": [
             0,
@@ -27,7 +27,7 @@
         ],
         "offset": [
             0,
-            -112.0
+            -140.0
         ],
         "text": "设置",
         "color": [
@@ -51,7 +51,7 @@
         "anchor_to": "center",
         "offset": [
             294,
-            -109.0
+            -139.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -96,7 +96,7 @@
         ],
         "offset": [
             -238,
-            -92.0
+            -112.0
         ],
         "text": "分区模式",
         "color": [
@@ -120,7 +120,7 @@
         ],
         "offset": [
             -132,
-            -92.0
+            -112.0
         ],
         "text": "-",
         "color": [
@@ -144,7 +144,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            -92.0
+            -112.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -189,7 +189,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            -92.0
+            -112.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -234,7 +234,7 @@
         ],
         "offset": [
             -238,
-            -68.0
+            -88.0
         ],
         "text": "防缺失",
         "color": [
@@ -258,7 +258,7 @@
         ],
         "offset": [
             -132,
-            -68.0
+            -88.0
         ],
         "text": "-",
         "color": [
@@ -282,7 +282,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            -68.0
+            -88.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -327,7 +327,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            -68.0
+            -88.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -372,7 +372,7 @@
         ],
         "offset": [
             -238,
-            -44.0
+            -64.0
         ],
         "text": "分块模式",
         "color": [
@@ -396,7 +396,7 @@
         ],
         "offset": [
             -132,
-            -44.0
+            -64.0
         ],
         "text": "-",
         "color": [
@@ -420,7 +420,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            -44.0
+            -64.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -465,7 +465,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            -44.0
+            -64.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -510,7 +510,7 @@
         ],
         "offset": [
             -238,
-            -20.0
+            -40.0
         ],
         "text": "地图画模式",
         "color": [
@@ -534,7 +534,7 @@
         ],
         "offset": [
             -132,
-            -20.0
+            -40.0
         ],
         "text": "-",
         "color": [
@@ -558,7 +558,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            -20.0
+            -40.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -603,7 +603,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            -20.0
+            -40.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -648,7 +648,7 @@
         ],
         "offset": [
             -238,
-            4.0
+            -16.0
         ],
         "text": "急速模式",
         "color": [
@@ -672,7 +672,7 @@
         ],
         "offset": [
             -132,
-            4.0
+            -16.0
         ],
         "text": "-",
         "color": [
@@ -696,7 +696,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            4.0
+            -16.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -741,7 +741,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            4.0
+            -16.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -786,9 +786,9 @@
         ],
         "offset": [
             -238,
-            28.0
+            8.0
         ],
-        "text": "解析线程",
+        "text": "冻结时间",
         "color": [
             0.66,
             0.7,
@@ -810,7 +810,7 @@
         ],
         "offset": [
             -132,
-            28.0
+            8.0
         ],
         "text": "-",
         "color": [
@@ -834,7 +834,7 @@
         "anchor_to": "center",
         "offset": [
             -84,
-            28.0
+            8.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -879,7 +879,7 @@
         "anchor_to": "center",
         "offset": [
             -60,
-            28.0
+            8.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -923,10 +923,10 @@
             "18px"
         ],
         "offset": [
-            62,
-            -92.0
+            -238,
+            32.0
         ],
-        "text": "邻区并行",
+        "text": "常加载形状",
         "color": [
             0.66,
             0.7,
@@ -947,8 +947,8 @@
             "18px"
         ],
         "offset": [
-            168,
-            -92.0
+            -132,
+            32.0
         ],
         "text": "-",
         "color": [
@@ -971,8 +971,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            216,
-            -92.0
+            -84,
+            32.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1016,8 +1016,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            240,
-            -92.0
+            -60,
+            32.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1061,10 +1061,10 @@
             "18px"
         ],
         "offset": [
-            62,
-            -68.0
+            -238,
+            56.0
         ],
-        "text": "每tick预算",
+        "text": "解析线程",
         "color": [
             0.66,
             0.7,
@@ -1085,8 +1085,8 @@
             "18px"
         ],
         "offset": [
-            168,
-            -68.0
+            -132,
+            56.0
         ],
         "text": "-",
         "color": [
@@ -1109,8 +1109,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            216,
-            -68.0
+            -84,
+            56.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1154,8 +1154,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            240,
-            -68.0
+            -60,
+            56.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1199,10 +1199,10 @@
             "18px"
         ],
         "offset": [
-            62,
-            -44.0
+            -238,
+            80.0
         ],
-        "text": "每幅巡区",
+        "text": "邻区并行",
         "color": [
             0.66,
             0.7,
@@ -1223,8 +1223,8 @@
             "18px"
         ],
         "offset": [
-            168,
-            -44.0
+            -132,
+            80.0
         ],
         "text": "-",
         "color": [
@@ -1247,8 +1247,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            216,
-            -44.0
+            -84,
+            80.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1292,8 +1292,8 @@
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            240,
-            -44.0
+            -60,
+            80.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1338,9 +1338,9 @@
         ],
         "offset": [
             62,
-            -20.0
+            -112.0
         ],
-        "text": "每区停留",
+        "text": "每tick预算",
         "color": [
             0.66,
             0.7,
@@ -1362,7 +1362,7 @@
         ],
         "offset": [
             168,
-            -20.0
+            -112.0
         ],
         "text": "-",
         "color": [
@@ -1386,7 +1386,7 @@
         "anchor_to": "center",
         "offset": [
             216,
-            -20.0
+            -112.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1431,7 +1431,7 @@
         "anchor_to": "center",
         "offset": [
             240,
-            -20.0
+            -112.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1476,9 +1476,9 @@
         ],
         "offset": [
             62,
-            4.0
+            -88.0
         ],
-        "text": "跨行降速",
+        "text": "地图速度",
         "color": [
             0.66,
             0.7,
@@ -1500,7 +1500,7 @@
         ],
         "offset": [
             168,
-            4.0
+            -88.0
         ],
         "text": "-",
         "color": [
@@ -1524,7 +1524,7 @@
         "anchor_to": "center",
         "offset": [
             216,
-            4.0
+            -88.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1569,7 +1569,7 @@
         "anchor_to": "center",
         "offset": [
             240,
-            4.0
+            -88.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1614,9 +1614,9 @@
         ],
         "offset": [
             62,
-            28.0
+            -64.0
         ],
-        "text": "物品NBT",
+        "text": "每幅巡区",
         "color": [
             0.66,
             0.7,
@@ -1638,7 +1638,7 @@
         ],
         "offset": [
             168,
-            28.0
+            -64.0
         ],
         "text": "-",
         "color": [
@@ -1662,7 +1662,7 @@
         "anchor_to": "center",
         "offset": [
             216,
-            28.0
+            -64.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1707,7 +1707,559 @@
         "anchor_to": "center",
         "offset": [
             240,
-            28.0
+            -64.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "+",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r12_name": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "118px",
+            "18px"
+        ],
+        "offset": [
+            62,
+            -40.0
+        ],
+        "text": "每区停留",
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.62,
+        "text_alignment": "left",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r12_val": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "62px",
+            "18px"
+        ],
+        "offset": [
+            168,
+            -40.0
+        ],
+        "text": "-",
+        "color": [
+            0.95,
+            0.95,
+            0.96
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.64,
+        "text_alignment": "center",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r12_minus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            216,
+            -40.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "−",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r12_plus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            240,
+            -40.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "+",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r13_name": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "118px",
+            "18px"
+        ],
+        "offset": [
+            62,
+            -16.0
+        ],
+        "text": "守水秒数",
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.62,
+        "text_alignment": "left",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r13_val": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "62px",
+            "18px"
+        ],
+        "offset": [
+            168,
+            -16.0
+        ],
+        "text": "-",
+        "color": [
+            0.95,
+            0.95,
+            0.96
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.64,
+        "text_alignment": "center",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r13_minus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            216,
+            -16.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "−",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r13_plus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            240,
+            -16.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "+",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r14_name": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "118px",
+            "18px"
+        ],
+        "offset": [
+            62,
+            8.0
+        ],
+        "text": "跨行降速",
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.62,
+        "text_alignment": "left",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r14_val": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "62px",
+            "18px"
+        ],
+        "offset": [
+            168,
+            8.0
+        ],
+        "text": "-",
+        "color": [
+            0.95,
+            0.95,
+            0.96
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.64,
+        "text_alignment": "center",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r14_minus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            216,
+            8.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "−",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r14_plus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            240,
+            8.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "+",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r15_name": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "118px",
+            "18px"
+        ],
+        "offset": [
+            62,
+            32.0
+        ],
+        "text": "物品NBT",
+        "color": [
+            0.66,
+            0.7,
+            0.76
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.62,
+        "text_alignment": "left",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r15_val": {
+        "type": "label",
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "size": [
+            "62px",
+            "18px"
+        ],
+        "offset": [
+            168,
+            32.0
+        ],
+        "text": "-",
+        "color": [
+            0.95,
+            0.95,
+            0.96
+        ],
+        "font_size": "normal",
+        "font_scale_factor": 0.64,
+        "text_alignment": "center",
+        "shadow": true,
+        "layer": 3
+    },
+    "si_r15_minus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            216,
+            32.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.62,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "−",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
+    "si_r15_plus": {
+        "type": "button",
+        "size": [
+            "18px",
+            "18px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            240,
+            32.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1752,7 +2304,7 @@
         "anchor_to": "center",
         "offset": [
             150,
-            50.0
+            54.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -1797,7 +2349,7 @@
         ],
         "offset": [
             0,
-            96.0
+            124.0
         ],
         "text": "点 − / + 调节，自动存进存档；「一键提速」= 后台解析 + 邻区并行 + 急速 + 满预算",
         "color": [
@@ -1981,6 +2533,54 @@
             },
             {
                 "si_r11_plus@structure_im_set.si_r11_plus": {}
+            },
+            {
+                "si_r12_name@structure_im_set.si_r12_name": {}
+            },
+            {
+                "si_r12_val@structure_im_set.si_r12_val": {}
+            },
+            {
+                "si_r12_minus@structure_im_set.si_r12_minus": {}
+            },
+            {
+                "si_r12_plus@structure_im_set.si_r12_plus": {}
+            },
+            {
+                "si_r13_name@structure_im_set.si_r13_name": {}
+            },
+            {
+                "si_r13_val@structure_im_set.si_r13_val": {}
+            },
+            {
+                "si_r13_minus@structure_im_set.si_r13_minus": {}
+            },
+            {
+                "si_r13_plus@structure_im_set.si_r13_plus": {}
+            },
+            {
+                "si_r14_name@structure_im_set.si_r14_name": {}
+            },
+            {
+                "si_r14_val@structure_im_set.si_r14_val": {}
+            },
+            {
+                "si_r14_minus@structure_im_set.si_r14_minus": {}
+            },
+            {
+                "si_r14_plus@structure_im_set.si_r14_plus": {}
+            },
+            {
+                "si_r15_name@structure_im_set.si_r15_name": {}
+            },
+            {
+                "si_r15_val@structure_im_set.si_r15_val": {}
+            },
+            {
+                "si_r15_minus@structure_im_set.si_r15_minus": {}
+            },
+            {
+                "si_r15_plus@structure_im_set.si_r15_plus": {}
             },
             {
                 "si_fast_btn@structure_im_set.si_fast_btn": {}

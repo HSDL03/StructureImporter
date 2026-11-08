@@ -25,17 +25,26 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "manual", "help2"]
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast",
+               "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
 EXTRA_KEY = "si_dir"
+# 配置版本：低于这个值的存档会被迁移（2 = 地图画速度档强制回到「稳」）
+CFG_VERSION = 2
 
 # ---------------------------------------------------------------- 分区导入
 SPLIT_DEFAULT = False     # 默认关，用 /structureim split on 或界面按钮打开
 SPLIT_SIZE = 16           # 分区边长（格）：默认按 16×16 的区块切片
+# 自适应分区：16×16 对"又薄又大"的平面是灾难——768×768 单层会被切成 2304 个区，
+# 每区才 256 块，光是来回 TP + 等区块就比写方块慢十倍。按体量把边长放大到
+# 每区 SECTION_TARGET 块左右，分区数直接掉两个数量级。
+SPLIT_AUTO = True         # 关掉就永远用 SPLIT_SIZE
+SPLIT_SIZE_MAX = 128      # 自适应上限（128 格 = 8×8 区块，正好在玩家加载半径内）
+SECTION_TARGET = 16000    # 每区目标方块数（越大分区越少、TP 越少，但单区更重）
 
 # ---------------------------------------------------------------- 防大型结构缺失
 # 开启后给每个分区临时加原版 /tickingarea 常加载区块，等它加载完再放置，
@@ -89,8 +98,27 @@ TP_ZONE_SECS = 3           # 九宫格巡逻：每个区停多少秒（保证区
 TP_ZONE_DIV = 3            # 每幅地图切 3x3=9 个区
 MAP_GIVE_WAIT = 40        # 发地图：TP 到单元中心后等多少 tick 再 give（防空白图）
 MAP_HOLD_SECS = 4          # 地图放进玩家主手停留几秒让引擎渲染地形（否则挂墙是空白图）
-MAP_TA_RADIUS = 4          # 发图前给整幅 128x128 单元挂常加载区块（圆半径 4 chunk 覆盖 8x8）
+MAP_TA_RADIUS = 4          # 旧版圆形常加载半径（已改用方形 _map_ta_add，仅留作对照）
 MAP_TA_WAIT = 60           # 常加载区块挂上后等多少 tick 让区块真正加载完再 give
+MAP_AREA_SQUARE = True     # 常加载形状：True 方形（一次盖住整幅）/ False 圆形（老写法，兼容用）
+
+# ---------------------------------------------------------------- 地图画速度档
+# 慢的根源：每张图都要「挂常加载 -> 等 3 秒 -> TP 九个区、每区停 3 秒 -> 拿图 4 秒」。
+# 三处提速：①常加载改成方形精确覆盖整幅（圆会切掉四角，所以以前得靠巡逻补）
+#          ②下一张图的常加载在画当前图时提前挂好（等待与绘制重叠）
+#          ③每区等待从"秒级"降到"tick 级"（区块本来就都加载着）
+# 0 = 稳（默认：老的圆形常加载 + 每区按秒等，最保险）  1 = 快  2 = 极速
+# 挂画阶段一旦报错就留在 0，别开 1/2：快档的等待被压到 tick 级，区块没跟上就会缺图/报错
+MAP_SPEED_DEFAULT = 0
+MAP_SQ_Y = 40              # 方形常加载的纵向厚度（区块只看 xz，给够就行）
+MAP_TA_WAIT_FAST = 30      # 快档：本张图第一次挂常加载后等多少 tick
+MAP_ZONE_WAIT = 10         # 快档：巡逻每个区停多少 tick
+MAP_ZONE_WAIT_FAST = 4     # 极速档：每区停多少 tick
+MAP_HOLD_TICKS = 30        # 快档：地图在主手停留多少 tick（1.5 秒）
+MAP_HOLD_FAST = 10         # 极速档：0.5 秒
+MAP_PREFETCH = True        # 快档/极速档：提前给下一张图挂常加载（overlap 掉等待）
+MAP_MOUNT_BATCH = 4        # 挂框每 tick 挂几张（原来一张 5 tick，10 张要 2.5 秒）
+MAP_MOUNT_WAIT = 20        # 全部画完回墙前等多少 tick（墙区块加载）
 
 TURBO_DEFAULT = False     # 急速模式：分区等待降到 1 tick（速度换卡顿风险）
 
@@ -113,9 +141,26 @@ REDSTONE_HINTS = (
     "dropper", "hopper", "copper_bulb", "target",
     "note_block", "daylight_detector", "sculk_sensor", "crafter",
 )
-# 门/栅栏门/铁轨这类多格或依赖支撑的方块，绝不能进唤醒批次：
-# 带邻居更新整块重写一次，引擎会认为它失去支撑 —— 当场掉落（整扇门消失）。
-WAKE_SKIP = ("door", "gate", "rail", "bed", "piston_head", "piston_arm")
+# 这些方块绝对不能进"红石唤醒"批次：它们是**多格结构/需要支撑**的方块，
+# 带邻居更新重写一次就会当场判定失去支撑然后掉落（门只剩半扇、铁轨弹飞）。
+# 真机踩坑：门在自己的位置被重写后，另一半还没写上去 -> 整扇门变成掉落物。
+WAKE_SKIP = ("door", "gate", "rail", "bed", "tall_grass", "tallgrass",
+             "sunflower", "lilac", "rose_bush", "peony", "vine", "ladder",
+             "sign", "banner", "carpet", "snow_layer", "candle", "chain")
+
+# 液体冲刷校正：水放下去会冲掉一批"靠支撑站着"的方块（火把、拉杆、按钮、
+# 铁轨、告示牌、花、红石线…）。液体阶段结束后按原结构挨个核对一遍，
+# 少了就补回去（每个位置只补一次，且不触发邻居更新）。
+WASH_HINTS = (
+    "torch", "lantern", "lever", "button", "rail", "sign", "banner", "ladder",
+    "vine", "flower", "tulip", "paeonia", "allium", "cornflower", "dandelion",
+    "poppy", "blue_orchid", "azure_bluet", "oxeye", "lily", "rose", "sunflower",
+    "lilac", "peony", "sapling", "wheat", "carrot", "potato", "beetroot",
+    "sugar_cane", "bamboo", "kelp", "seagrass", "coral", "tripwire", "wire",
+    "repeater", "comparator", "string", "carpet", "snow_layer", "banner",
+    "candle", "chain", "pot", "skull", "head", "frame", "painting",
+)
+WASH_MAX_FIX = 800        # 一次导入最多补多少个被水冲掉的方块（防止无限补）
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
 
@@ -150,7 +195,10 @@ WATERLOG_KEYS = ("waterlogged",)
 FREEZE_DEFAULT = True     # 默认开启
 FREEZE_SECS = 6.0         # 全部写完后继续守多少秒液体（0 = 不守，只做最后写入）
 FREEZE_SECS_MAX = 60.0
-FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒回写
+FREEZE_BUDGET_MS = 2.5    # 守液体时每 tick 最多花多少毫秒
+FREEZE_CHECKS = 600       # 守液体时每 tick 最多巡检多少格（读比写便宜，先读后写）
+FREEZE_MAX_FIX = 3        # 同一格最多补写几次（补不进去说明它本来就该流走）
+FREEZE_FIX_CAP = 4000     # 累计补写超过这个数就提前收手（说明水在真流，越写越卡）回写
 
 # ---------------------------------------------------------------- 物品 NBT 安全阈值
 # 「盒中盒」递归结构（潜影盒里装潜影盒，几十层、单件 2MB）原样灌给引擎会卡死/崩，

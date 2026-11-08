@@ -1,0 +1,16 @@
+回滚到 e095b5c（最新功能版），叠加崩溃修复与透明黑界面
+
+代码基线 = e095b5c（含水 + 冻结 + 补水 + 地图提速 + 大结构自适应分区 +
+16 行设置页 + 命令补全 + 键名修复），CFG_VERSION=2、MAP_SPEED_DEFAULT=0。
+
+在基线上保留/叠加三件事：
+1. 崩溃修复（从日志定位的根因，e095b5c 同样存在）：
+   - tell 的 NotifyOneMessage 颜色参数传空串会被新引擎判成非法包，
+     客户端 readNoHeader 失败 -> onDisconnect reason 41 -> 世界销毁
+   - push 里 dir/err/名称兜底非空；清空小栏发空格
+   - states 交给引擎前转 UTF-8 字节串（_eng_states/_native），
+     否则刷 PyDict's key is not string（每个带状态方块一条）
+   - SetCommandBlock 的 cmd/name 传字节串，否则命令整条丢弃
+2. 界面：贴图保持透明黑（面板纯黑 alpha 124），布局用 e095b5c 自带的
+   16 行逐行设置页 + 一键提速按钮。
+3. py3 离线校验不做 bytes 转换，断言按 str 比对；devcheck 全部通过。
