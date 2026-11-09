@@ -12,6 +12,12 @@
 </p>
 
 <p align="center">
+	<a href="https://github.com/HSDL03/StructureImporter/releases">
+		<img
+			src="https://img.shields.io/badge/version-0.0.3-brightgreen.svg"
+			alt="Version: 0.0.3"
+		/>
+	</a>
 	<a href="https://opensource.org/license/mit">
 		<img
 			src="https://img.shields.io/badge/License-MIT-blue.svg"
@@ -83,6 +89,14 @@
 
 ### 安装步骤
 
+**方式一：直接用发布包（推荐）**
+
+1. 到 [Releases](https://github.com/HSDL03/StructureImporter/releases) 下载最新的 `StructureImporter_v0.0.3.zip` 并解压
+2. 把解压出的行为包、资源包目录连同 `world_behavior_packs.json`、`world_resource_packs.json` 放进你的开发世界目录（或用 MC Studio 打开）
+3. 进入世界，聊天框输入 `/structureim ui` 验证 MOD 已生效
+
+**方式二：从源码**
+
 1. 下载本项目到本地（推荐 `git clone https://github.com/HSDL03/StructureImporter.git`）
 2. 用 MC Studio 打开项目，或把行为包与资源包导入你的开发世界（`world_behavior_packs.json` / `world_resource_packs.json` 已配置好挂载关系）
 3. 进入世界，聊天框输入 `/structureim ui` 验证 MOD 已生效
@@ -106,6 +120,13 @@
 | `/structureim threads <1-8>` | 结构解析线程：≥2 时解析走后台，点放置不再卡主线程 |
 | `/structureim parallel <1-4>` | 相邻分区并行：提前加载相邻分区区块，轮到它时不用等 |
 | `/structureim nbtlimit <0\|8-1024>` | 物品 NBT 上限（KB）：默认 0 = 不裁剪，盒中盒原样保留 |
+| `/structureim split <开\|关>` | 分区导入：超大结构切块写，配合跟随传送 |
+| `/structureim splitz <0\|16-128>` | 分区边长：0 = 自动（按实测直方图定），16-128 = 自定义 |
+| `/structureim ta <开\|关>` | 纯常加载：整张结构挂 tickingarea，玩家不再跟随传送 |
+| `/structureim tac` | 清理本插件残留的常加载区（只删 `si_` 开头，不动别人的指令区） |
+| `/structureim verify <开\|关>` | 导完逐块回读校验，缺的自动补写（默认开） |
+| `/structureim preset <稳\|均衡\|极速>` | 一键套用整套参数 |
+| `/structureim fast` | 一键提速（后台解析 + 邻区并行 + 急速 + 满预算） |
 | `/structureim manual` | 聊天框版图文教程 |
 | `/structureim selftest` | 环境自检 |
 
