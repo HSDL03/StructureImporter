@@ -179,7 +179,18 @@ def _nbt_heavy(node, max_kb=None, max_depth=None):
 
 
 def _item_dict(entry):
-    """mcstructure 物品 NBT -> SpawnItemToContainer 认的物品字典"""
+    """mcstructure 物品 NBT -> SpawnItemToContainer 认的物品字典
+
+    产出两份 userData，写入时按顺序试：
+        plain —— 纯 python 值（附魔是 [{'id':9,'lvl':3}] 这种），引擎文档里
+                 itemDict.userData 就是这个形态，命中率最高
+        typed —— 叶子带 {'__type__','__value__'} 包装，SetBlockEntityData 那条路
+                 认这个，万一引擎版本换了也能兜住
+
+    以前只做一份（typed）并且"失败就算完"，实测制裁盒子这种
+    「附魔 + 自定义名字 + 盒中盒」的结构导进去后 NBT 全没了：
+    引擎把 itemDict 收下了、userData 却整个吞掉，代码还以为成功。
+    """
     node = _val(entry)
     if not isinstance(node, dict):
         return None
@@ -197,16 +208,57 @@ def _item_dict(entry):
     # 数量和堆叠上限对不上引擎会直接拒收，先夹住
     if count > 64:
         count = 64
-    item = {"itemName": name, "count": count, "auxValue": aux}
+    base = {"itemName": name, "count": count, "auxValue": aux}
     tag = _val(node.get("tag")) or _val(node.get("ItemTag"))
-    trim = False
+    plain, typed, trim = None, None, False
     if isinstance(tag, dict) and tag:
         if _nbt_heavy(tag):
-            # 盒中盒 / 超大 NBT：只放物品本体，NBT 丢掉（否则卡死或崩）
+            # 真的超深/超大：只把"看得见"的部分留下，别整件丢
+            tag = _slim_item_tag(tag)
             trim = True
-        else:
-            item["userData"] = tag
-    return {"dict": item, "slot": slot, "trim": trim}
+        if tag:
+            p = dict(base)
+            t = dict(base)
+            try:
+                p["userData"] = _typed_to_plain(tag)
+            except Exception:
+                p["userData"] = tag
+            t["userData"] = tag
+            plain, typed = p, t
+    if plain is None:
+        plain = dict(base)
+    return {"plain": plain, "typed": typed, "slot": slot, "trim": trim}
+
+
+# 物品 NBT 里"玩家看得见"的字段：NBT 大到必须裁剪时只留这些
+ITEM_KEEP_KEYS = (
+    "display",          # 名字 + Lore
+    "CustomName",       # 铁砧改名 / 实体名字
+    "ench",             # 附魔（Java 风格存档）
+    "Enchantments",     # 附魔（Bedrock 风格存档）
+    "RepairCost",
+    "Unbreakable",
+    "Damage",
+    "HideFlags",
+    "AttributeModifiers",
+    "CanDestroy",
+    "CanPlaceOn",
+    "StoredEnchantments",
+    "minecraft:keep_on_death",
+)
+
+
+def _slim_item_tag(tag):
+    """只留名称/附魔/耐久这类关键字段，其余（盒中盒、交易表、蜂巢）丢掉"""
+    out = {}
+    for k in ITEM_KEEP_KEYS:
+        if k in tag:
+            out[k] = tag[k]
+    # 盒中盒的 Items 是最占地方的，但玩家确实可能想看，浅一层留着
+    items = tag.get("Block") or tag.get("Items")
+    if isinstance(items, dict) and len(out) < 6:
+        out["Items"] = items
+    return out
 
 
 HELP = [
@@ -315,7 +367,7 @@ class Job(object):
         self.ent_fixed = 0
         self.cmd_fixed = 0
         self.item_trim = 0      # 因 NBT 过大/过深被裁掉数据的物品数
-        self.item_queue = []    # 待写入容器的物品 [(itemDict, slot, pos, plainDict)]
+        self.item_queue = []    # 待写入容器的物品 [(plainDict, typedDict, slot, pos)]
         self.wake_cursor = 0
         self.blk_at = {}
         self.phase = "blocks"
@@ -3083,19 +3135,22 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 continue
             if item.get("trim"):
                 job.item_trim += 1
-            d = item["dict"]
-            # 同时准备好普通 dict 版本：引擎有的版本不收 typed 包装
-            plain = dict(d)
-            ud = d.get("userData")
-            if isinstance(ud, dict) and ud:
-                plain["userData"] = _typed_to_plain(ud)
-            job.item_queue.append((d, item["slot"], pos, plain))
+            # (首选 plain, 备选 typed, 槽位, 位置)；typed 为 None 表示这件没有 NBT
+            job.item_queue.append((item["plain"], item["typed"],
+                                   item["slot"], pos))
 
     def _step_items(self, job):
         """分帧写入容器物品
 
         盒中盒结构单件物品 NBT 可达 2MB（全盒子十几 MB），一 tick 全灌进去
         会把主线程顶死。这里按时间预算摊到多个 tick，数据一点都不丢。
+
+        写入要过三道关（制裁盒子那种"附魔 + 改名 + 盒中盒"全靠这个）：
+            1. 先 plain（纯值 userData）——文档形态，命中率最高
+            2. 引擎说成功但回读发现 userData 是空的 -> 说明被吞了，
+               换 typed（叶子带 __type__ 包装）再写一次
+            3. 还不行，把 userData 里的 Items/Block 摘掉只留 display+ench 再试，
+               至少名字和附魔能留下
         """
         comp = self._items()
         if comp is None:
@@ -3106,15 +3161,32 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         budget = self._write_budget()
         t0 = time.time()
         while job.item_queue:
-            d, slot, pos, plain = job.item_queue[0]
-            ok = False
-            try:
-                ok = bool(comp.SpawnItemToContainer(d, slot, pos, dim))
-                if not ok and isinstance(plain.get("userData"), dict):
-                    # typed 包装被拒时退回普通 dict 再试一次
-                    ok = bool(comp.SpawnItemToContainer(plain, slot, pos, dim))
-            except Exception:
-                ok = False
+            plain, typed, slot, pos = job.item_queue[0]
+            has_ud = isinstance(plain.get("userData"), dict) and bool(plain["userData"])
+
+            def try_write(cand):
+                """写一次；带 NBT 的必须回读确认没被吞"""
+                try:
+                    if not comp.SpawnItemToContainer(cand, slot, pos, dim):
+                        return False
+                except Exception:
+                    return False
+                if not isinstance(cand.get("userData"), dict) or not cand["userData"]:
+                    return True
+                return self._item_ud_ok(comp, pos, slot, dim)
+
+            ok = try_write(plain)
+            if not ok and typed is not None:
+                ok = try_write(typed)
+            if not ok and has_ud:
+                # 最后一道：只留看得见的字段（名字/附魔/耐久），别让整件物品消失
+                slim = dict(plain)
+                tight = _slim_item_tag(plain["userData"])
+                if tight:
+                    slim["userData"] = tight
+                    ok = try_write(slim)
+                    if ok:
+                        job.item_trim += 1
             if ok:
                 job.item_ok += 1
             else:
@@ -3124,6 +3196,21 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if (time.time() - t0) * 1000.0 >= budget and job.item_queue:
                 return
         self._next_section(job)
+
+    def _item_ud_ok(self, comp, pos, slot, dim):
+        """回读容器格位，确认物品的 userData 真的落进去了
+
+        读不到就别当失败（有的容器/版本没有 GetContainerItem），
+        读到了但是空 userData，那就是引擎把 NBT 吞了。
+        """
+        try:
+            cur = comp.GetContainerItem(pos, slot, dim)
+        except Exception:
+            return True
+        if not isinstance(cur, dict):
+            return False
+        ud = cur.get("userData")
+        return isinstance(ud, dict) and bool(ud)
 
     def _step_ents(self, job, comp):
         """把方块实体数据写回去
