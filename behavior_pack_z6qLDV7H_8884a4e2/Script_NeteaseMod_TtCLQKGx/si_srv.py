@@ -1595,7 +1595,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         use_chunk = self.chunk
 
         blocks, size = mcst.rotate(data.blocks, data.size, rotation)
-        blocks = self._with_aux(blocks)
+        # states -> aux 的翻译（_with_aux）挪到 prep 阶段分帧做：
+        # 一百多万块时这一步在主线程要跑一两秒，正是"点导入，画面僵住"的来源。
+        # 分帧版会原地改写 blocks（跳过项的压缩也在那里完成），见 _step_prep 阶段 0。
+        self._skipped = 0
         ents = mcst.rotate_entities(data.block_entities, data.size, rotation)
         mobs = mcst.rotate_entities(data.entities, data.size, rotation)
         base, dim = self._base(pid, size)
@@ -1607,12 +1610,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             ms = cfg.MAP_SIZE
             base = (int(round((base[0] + 64.0) / ms)) * ms - 64, base[1],
                     int(round((base[2] + 64.0) / ms)) * ms - 64)
+            # 坐标是从 0 开始的，按实际包围盒算（结构边上常有空气，size 会偏大，
+            # 用 size 会多发几张空白地图）；地图画本身块数不大，扫一遍无所谓
+            bx0 = min(b[0] for b in blocks)
+            bz0 = min(b[2] for b in blocks)
+            bw = max(b[0] for b in blocks) - bx0 + 1
+            bh = max(b[2] for b in blocks) - bz0 + 1
             self.tell(pid, u"§7地图画模式：基点已对齐地图网格 §f%d, %d §7（尺寸 %dx%d → %d 张地图）" %
-                      (base[0], base[2],
-                       max(b[0] for b in blocks) - min(b[0] for b in blocks) + 1,
-                       max(b[2] for b in blocks) - min(b[2] for b in blocks) + 1,
-                       int(math.ceil((max(b[0] for b in blocks) - min(b[0] for b in blocks) + 1) / float(ms))) *
-                       int(math.ceil((max(b[2] for b in blocks) - min(b[2] for b in blocks) + 1) / float(ms)))))
+                      (base[0], base[2], bw, bh,
+                       int(math.ceil(bw / float(ms))) *
+                       int(math.ceil(bh / float(ms)))))
 
         # 分区边长按体量自适应：大平面不再被切成两千多个小区（每区才 256 块，
         # 换区开销比写方块还贵）。side 同时用于"跨行远传"的判定。
@@ -1640,14 +1647,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if self.job.freeze:
             self._freeze_off()         # 先把上一次可能残留的规则还原，再按
             self._freeze_on()          # 尽量把随机刻/昼夜/天气按住，结束恢复
-        if ents:
-            # 坐标 -> 原本该放什么方块，写实体后要拿它核对/还原
-            table = {}
-            for (x, y, z, name, aux, states) in blocks:
-                table[(x, y, z)] = (name, aux, states)
-            self.job.blk_at = table
-        else:
-            self.job.blk_at = {}
+        # 坐标 -> 原本该放什么方块（写实体后拿它核对/还原）。
+        # blocks 这时还是五元组（aux 还没翻），这张表等 prep 扫完再建，见 _prep_finish。
+        self.job.blk_at = {}
+        self.job.need_blk_at = bool(ents)
         # 聊天框只报"开始/结束"这种低频消息，过程全交给下方 tip 小栏
         self.tell(pid, u"§a开始放置 §f%s §7· %d×%d×%d · %d 方块 · 旋转 %d" %
                   (util.short(entry.rel, 36), size[0], size[1], size[2],
@@ -1665,8 +1668,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             bits.append(u"液体 %d（最后放）" % len(self.job.liquid_idx))
         if getattr(data, "waterlogged", 0):
             bits.append(u"含水方块 %d" % data.waterlogged)
-        if self._skipped:
-            bits.append(u"跳过运行时方块 %d" % self._skipped)
+        # 跳过数要等 prep 扫完才知道，那会在 _prep_finish 里用 note 补一句
         est = self._estimate_secs(len(blocks), ents, wake, sections, mobs)
         if self.tick_mode:
             est += len(sections) * self.tick_speed
@@ -2261,41 +2263,62 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         return max(0.1, secs)
 
     def _pick_split_size(self, blocks):
-        """按体量挑分区边长（16 / 32 / 48 … 直到 SPLIT_SIZE_MAX）
+        """分区边长的初值
 
-        768×768 的单层平面按 16×16 切 = 2304 个区、每区 256 块：写完 256 块只要
-        几毫秒，却要花几十 tick 等区块、TP、预取——时间全耗在换区上。
-        这里按"每区大约 SECTION_TARGET 块"反推边长，分区数能掉两个数量级。
-        split_size > 0 时是用户自定义边长，直接用（夹在 16 与上限之间）。
+        真正的定稿在 prep 首帧（见 _decide_side）：这里只处理"用户给了固定边长"
+        和"关掉自适应"两种情况。自适应时返回最小边长占位，等直方图算出来再改，
+        避免在主线程里为了估密度先扫一遍 115 万块。
         """
         custom = int(getattr(self, "split_size", 0) or 0)
         if custom > 0:
             return max(int(cfg.SPLIT_SIZE), min(int(cfg.SPLIT_SIZE_MAX), custom))
-        if not cfg.SPLIT_AUTO or not blocks:
-            return max(1, int(cfg.SPLIT_SIZE))
-        n = len(blocks)
-        # 采样算水平包围盒（几十万块全量扫也快，但没必要）
-        step = max(1, n // 4000)
-        x0 = x1 = blocks[0][0]
-        z0 = z1 = blocks[0][2]
-        for i in _range(0, n, step):
-            b = blocks[i]
-            x, z = b[0], b[2]
-            if x < x0:
-                x0 = x
-            elif x > x1:
-                x1 = x
-            if z < z0:
-                z0 = z
-            elif z > z1:
-                z1 = z
-        area = max(1, (x1 - x0 + 1) * (z1 - z0 + 1))
-        dens = float(n) / area
+        return max(1, int(cfg.SPLIT_SIZE))
+
+    def _decide_side(self, hist):
+        """按实测直方图选分区边长：区数尽量少，但单个分区不超过 1.5 倍目标量
+
+        旧算法用"水平包围盒面积反推平均密度"，对竖直堆叠的建筑完全失真：
+        实测象牙城堡 190×148×239 / 115 万块，估出 side=32，单区 6.9 万块，
+        是 SECTION_TARGET(1.6 万) 的 4.3 倍——一区要写好几秒，中途玩家一走
+        区块就卸，风险全压在这几个热点区上。
+
+        这里改成从粗到细逐个边长试算，用 16×16 区块列的直方图做区域求和，
+        第一个"最大区 ≤ 上限"的就采纳（从粗往细扫，天然是区数最少的解）。
+
+        返回 (边长, 是否必须分区)。第二个值专门用于"自适应结果刚好等于默认
+        边长"的情况：以前 _prep_finish 用 `side > SPLIT_SIZE` 判断该不该分区，
+        细分到 16 时会被当成"不用分区"，一百多万块一口气全塞进一个区——
+        远处区块根本没加载，写了也白写。
+        """
+        if not cfg.SPLIT_AUTO or not hist:
+            return max(1, int(cfg.SPLIT_SIZE)), False
         target = max(256, int(cfg.SECTION_TARGET))
-        side = int(math.sqrt(target / max(0.000001, dens)))
-        side = ((side + 15) // 16) * 16      # 向上取整到 16 的倍数（对齐区块列）
-        side = max(int(cfg.SPLIT_SIZE), min(int(cfg.SPLIT_SIZE_MAX), side))
-        return side
+        cap = int(target * 1.5)
+        lo = max(16, int(cfg.SPLIT_SIZE))
+        lo = ((lo + 15) // 16) * 16
+        hi = max(lo, int(cfg.SPLIT_SIZE_MAX))
+        total = 0
+        for v in hist.values():
+            total += v
+        best_side, best_max = lo, None
+        side = hi
+        need = False
+        while side >= lo:
+            cells = side // 16
+            g = {}
+            for key, cnt in hist.items():
+                k = (key[0] // cells, key[1] // cells)
+                g[k] = g.get(k, 0) + cnt
+            mx = max(g.values()) if g else 0
+            if best_max is None or mx < best_max:
+                best_max, best_side = mx, side
+            if mx <= cap:
+                # 够大且确实会切成多块，才值得为 TP 付代价
+                need = (total >= target) and len(g) > 1
+                return side, need
+            side -= 16
+        # 全都不达标（极端密实的立体结构）：退回最大区最小的那个
+        return best_side, (total >= target)
 
     def _build_sections(self, blocks, wake, ents, use_chunk=None, side=None):
         """按水平区块把整张结构切成若干分区
@@ -2411,7 +2434,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 len(sec["ents"]) * 200 + len(sec["wake"]) * 4)
 
     def _with_aux(self, blocks):
-        """把 states 翻成 aux，每个调色板项只算一次
+        """【已废弃，保留备查】states -> aux 的翻译现在在 _step_prep 阶段 0 分帧做
+
+        原来这个函数在 _begin_job 里对全表一次跑完，一百多万块要一两秒，
+        直接把主线程顶住。分帧版还会顺手统计分区直方图、压缩跳过的运行时方块，
+        见 _step_prep。这里留着是因为它把"为什么这么翻"写清楚了：
 
         顺手做两件"让所有 NBT 都能导"的事：
           1. 老名字换成引擎认的（flowing_water -> water 等），否则永远写失败
@@ -2719,17 +2746,97 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         st = job.prep
         blocks = job.blocks
         n = len(blocks)
-        side = st["side"]
         groups = st["groups"]
         wake = st["wake"]
         wash = st["wash"]
         liq = st["liq"]
+        # 阶段 0：翻 aux（states -> aux）+ 统计 16×16 区块列直方图 + 收集方块名
+        # 一次遍历做完三件事，全程分帧。这是原来"点导入卡一两秒"的最大一块：
+        # 一百多万块时，_with_aux 在主线程里要跑一两秒。
+        # 跳过项（运行时方块）在这里就地压缩掉：写指针 w 永远不超过读指针，
+        # 所以边读边写不会覆盖还没读到的块，也就不用再开一份新列表（省一倍内存）。
+        if not st.get("auxed"):
+            hist = st.get("hist")
+            if hist is None:
+                hist = st["hist"] = {}
+                st["names"] = set()
+                st["n0"] = n
+                st["w"] = 0
+                st["skipn"] = 0
+            names = st["names"]
+            cache = st.get("aux_cache")
+            if cache is None:
+                cache = st["aux_cache"] = {}
+            alias_map = cfg.BLOCK_ALIAS
+            skip_set = cfg.SKIP_BLOCKS
+            n0 = st["n0"]
+            w = st["w"]
+            skipn = st["skipn"]
+            cur = st["cursor"]
+            t0 = time.time()
+            while cur < n0:
+                x, y, z, name, states = blocks[cur]
+                alias = alias_map.get(name)
+                if alias:
+                    name = alias
+                if name in skip_set:
+                    skipn += 1
+                    cur += 1
+                    continue            # 直接丢掉：不占分区、不进直方图
+                if states:
+                    # 同一个调色板项的所有方块共用同一个 states 对象（si_nbt 里就
+                    # 没复制），所以按对象身份缓存一次就够，不必每块重拼 key
+                    ck = id(states)
+                    hit = cache.get(ck)
+                    if hit is not None:
+                        states, aux = hit
+                    else:
+                        states = _norm_states(states)
+                        aux = 0
+                        try:
+                            aux = int(self._states().GetBlockAuxValueFromStates(
+                                _native(name), _eng_states(states)))
+                        except Exception:
+                            aux = 0
+                        cache[ck] = (states, aux)
+                else:
+                    aux = 0
+                blocks[w] = (x, y, z, name, aux, states)
+                w += 1
+                k = (x // 16, z // 16)
+                hist[k] = hist.get(k, 0) + 1
+                names.add(name)
+                cur += 1
+                if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= cfg.PREP_SLICE_MS:
+                    break
+            st["cursor"] = cur
+            st["w"] = w
+            st["skipn"] = skipn
+            if cur < n0:
+                return
+            del blocks[w:]              # 截掉尾部残留，列表里只剩有效块
+            st["auxed"] = True
+            st["cursor"] = 0
+            st["n0"] = None
+            st["aux_cache"] = None
+            self._skipped = skipn
+            if cfg.SPLIT_AUTO and not (int(getattr(self, "split_size", 0) or 0) > 0):
+                side, need = self._decide_side(hist)
+                st["side"] = side
+                st["auto_split"] = need
+                job.side = side
+            st["hist"] = None          # 定完边长就扔掉，别一直占着几十万个键
+            return
+        side = st["side"]
         # 关键提速：整张结构里方块名字的种类一般只有几十种，先按"唯一名字"
         # 把要不要唤醒/要不要补水算一次，逐块只做字典查表。
         # 400k 块 × 20 多个关键字子串判断 -> 400k 次 dict.get，差两个数量级。
         if "flags" not in st:
             flags = {}
-            for nm in set([b[3] for b in blocks]):
+            src = st.get("names")
+            if not src:
+                src = set([b[3] for b in blocks])
+            for nm in src:
                 low = nm.lower()
                 wake_hit = False
                 if not any(kw in low for kw in cfg.WAKE_SKIP):
@@ -2789,6 +2896,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _prep_finish(self, job):
         """扫描完成后把分区定下来（这一步只剩排序，几十毫秒内）"""
         st = job.prep
+        if getattr(job, "need_blk_at", False) and not job.blk_at:
+            # 写实体后要按坐标核对/还原方块，这里才建表（blocks 已是六元组）
+            table = {}
+            for b in job.blocks:
+                table[(b[0], b[1], b[2])] = (b[3], b[4], b[5])
+            job.blk_at = table
+        if self._skipped:
+            self.note(u"跳过运行时方块 %d" % self._skipped)
         blocks = job.blocks
         side = st["side"]
         self._liquid_idx = st["liq"]
@@ -2796,7 +2911,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             # 手动分块模式：仍按数据量再切 Y 带（少见的主动选择）
             sections = self._build_sections(blocks, st["wake"], job.entities,
                                             True, side)
-        elif not (self.split or self.tick_mode or side > cfg.SPLIT_SIZE):
+        elif not (self.split or self.tick_mode or side > cfg.SPLIT_SIZE
+                  or st.get("auto_split")):
             # 不分区：整张结构一个分区，液体单独挑出去最后放
             liqset = set(st["liq"])
             blk = [i for i in _range(len(blocks)) if i not in liqset]
