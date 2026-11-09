@@ -22,6 +22,11 @@ TAG_END, TAG_BYTE, TAG_SHORT, TAG_INT, TAG_LONG = 0, 1, 2, 3, 4
 TAG_FLOAT, TAG_DOUBLE, TAG_BYTE_ARR, TAG_STR = 5, 6, 7, 8
 TAG_LIST, TAG_COMPOUND, TAG_INT_ARR, TAG_LONG_ARR = 9, 10, 11, 12
 
+try:                                     # py2 的 range 会先建整张列表，用 xrange
+    _xrange = xrange                     # noqa: F821
+except NameError:
+    _xrange = range
+
 try:                                     # py2 游戏 / py3 本地测试都要能 import
     STR_TYPES = (str, unicode)           # noqa: F821
 except NameError:
@@ -360,8 +365,18 @@ def load_bytes(data, name=None, skip_air=True, skip_void=True):
     return load_prepared(_decompress(data), name, skip_air, skip_void)
 
 
-def load_prepared(dec, name=None, skip_air=True, skip_void=True):
-    """从「已解压的裸 NBT」构建结构（后台解析线程走这里）"""
+def iter_load_prepared(dec, name=None, skip_air=True, skip_void=True,
+                       chunk=8000, out=None):
+    """切片式解析：每处理 chunk 个方块 yield 一次进度，末尾把结构写进 out["data"]
+
+    为什么这么设计（"不能卡死游戏"）：
+      1. 主线程按毫秒预算一帧一帧推 —— 再大的结构也不会一口气占住引擎；
+      2. 后台线程推进时每片之间让出 GIL —— 引擎线程照常跑，不掉帧；
+      3. py2.7 的生成器不能 return 值，结果统一放 out。
+    每次 next() 的耗时约等于 chunk 个方块的解析时间，调用方据此切预算。
+    """
+    if out is None:
+        out = {}
     root_t = parse_t(dec)
     root = plain(root_t)
 
@@ -397,55 +412,78 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
     if total < expect:
         raise ValueError("block_indices 长度不足：%d < %d" % (total, expect))
 
+    # palette 预处理：每个下标要用的东西一次算好，主循环里不再反复做
+    # 集合查找 + 三次列表索引（589k 块时这几步占比很不小）
+    pal = []
+    for i in _xrange(n_pal):
+        nm = names[i]
+        pal.append((nm, states[i], nm in AIR_BLOCKS, nm in LIQUID_NAMES))
+    blank = ("", {}, False, False)
+    void_name = "minecraft:structure_void"
+
     blocks = []
     append = blocks.append
     n_liquid = 0
     n_waterlog = 0
-    for index in range(expect):
-        v = layer0[index]
-        lv = layer1[index] if (layer1 is not None and index < len(layer1)) else -1
-        block_name = names[v] if 0 <= v < n_pal else ""
-        # 这个位置叠的液体（layer1 里只会有水/岩浆，其余当作没有）
-        liq = ""
-        if 0 <= lv < n_pal and names[lv] in LIQUID_NAMES:
-            liq = names[lv]
+    has_l1 = layer1 is not None and len(layer1) >= expect
+
+    # 坐标用计数器推，别每块 divmod 一次；下标序是 x 最慢、z 最快
+    x = 0
+    y = 0
+    z = 0
+    step = 0
+    for index, v in enumerate(layer0):
+        if index >= expect:
+            break
+        lv = layer1[index] if has_l1 else -1
         if v < 0:
-            # 结构空位：保留原方块。但液体层在这里给了水 -> 说明"这一格只有水"
-            if liq and not skip_void:
-                x, y, z = _index_pos(index, (sx, sy, sz))
-                append((x, y, z, liq, dict(states[lv] or {})))
+            # 结构空位：保留原方块。但液体层这里给了水 -> "这一格只有水"
+            if 0 <= lv < n_pal and pal[lv][3] and not skip_void:
+                append((x, y, z, pal[lv][0], dict(pal[lv][1] or {})))
                 n_liquid += 1
-            continue
-        if not block_name:
-            continue
-        if block_name in AIR_BLOCKS:
-            # 空气格上叠了液体 = 实心水（layer0 是结构空位时同理，水照放）
-            if liq and (block_name != "minecraft:structure_void" or not skip_void):
-                x, y, z = _index_pos(index, (sx, sy, sz))
-                append((x, y, z, liq, dict(states[lv] or {})))
-                n_liquid += 1
-            elif skip_air:
-                continue
-        elif liq and block_name not in LIQUID_NAMES:
-            # 方块 + 液体叠加 = 含水方块。基岩版靠 waterlogged 状态表示，
-            # 原方块认这个状态就补上（水缸里的珊瑚、台阶里的水都能还原）。
-            st = states[v] or {}
-            if any(k in st for k in WATERLOG_KEYS):
-                st = dict(st)
-                for k in WATERLOG_KEYS:
-                    if k in st:
-                        st[k] = 1
-                x, y, z = _index_pos(index, (sx, sy, sz))
-                append((x, y, z, block_name, st))
-                n_waterlog += 1
-                continue
-            # 方块本身不吃 waterlogged：只放方块（水丢掉，总比整格没有强）
-        if skip_air and block_name in AIR_BLOCKS:
-            continue
-        x, y, z = _index_pos(index, (sx, sy, sz))
-        append((x, y, z, block_name, states[v]))
-        if block_name in LIQUID_NAMES:
-            n_liquid += 1
+        else:
+            nm, st, is_air, is_liq = pal[v] if 0 <= v < n_pal else blank
+            if nm:
+                lq = pal[lv][0] if (0 <= lv < n_pal and pal[lv][3]) else ""
+                if is_air:
+                    # 空气格上叠了液体 = 实心水（layer0 是结构空位时同理）
+                    if lq and (nm != void_name or not skip_void):
+                        append((x, y, z, lq, dict(pal[lv][1] or {})))
+                        n_liquid += 1
+                    elif not skip_air:
+                        append((x, y, z, nm, st))
+                elif lq and not is_liq:
+                    # 方块 + 液体叠加 = 含水方块：认 waterlogged 的补上
+                    st2 = st or {}
+                    wl = None
+                    for k in WATERLOG_KEYS:
+                        if k in st2:
+                            wl = k
+                            break
+                    if wl is not None:
+                        st2 = dict(st2)
+                        st2[wl] = 1
+                        append((x, y, z, nm, st2))
+                        n_waterlog += 1
+                    else:
+                        # 方块本身不吃 waterlogged：只放方块
+                        append((x, y, z, nm, st))
+                else:
+                    append((x, y, z, nm, st))
+                    if is_liq:
+                        n_liquid += 1
+
+        z += 1
+        if z >= sz:
+            z = 0
+            y += 1
+            if y >= sy:
+                y = 0
+                x += 1
+        step += 1
+        if step >= chunk:
+            step = 0
+            yield index + 1, expect
 
     ents = body.get("entities")
     entity_count = len(ents) if isinstance(ents, list) else 0
@@ -470,8 +508,6 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
         block_entities.append((ex, ey, ez, _wrap_plain_compound(nbt)))
 
     # 实体（矿车 / 船 / 生物 / 掉落物）：structure.entities
-    # 实测是扁平 dict：identifier、Pos、Rotation 和完整实体 NBT 都在顶层，没有 nbt 包装
-    # 部分导出工具会把 entities 写成 None（tag end），or [] 兜住
     struct_ents = []
     for item in (ents or []):
         if not isinstance(item, dict):
@@ -490,11 +526,24 @@ def load_prepared(dec, name=None, skip_air=True, skip_void=True):
             continue
         struct_ents.append((ex, ey, ez, ident, item))
 
-    out = Structure(name or "memory", None, (sx, sy, sz), blocks, entity_count,
-                    block_entities, struct_ents)
-    out.liquids = n_liquid        # 液体格数（最后单独写，免得乱流）
-    out.waterlogged = n_waterlog  # 含水方块数（方块 + 水）
-    return out
+    data = Structure(name or "memory", None, (sx, sy, sz), blocks, entity_count,
+                     block_entities, struct_ents)
+    data.liquids = n_liquid        # 液体格数（最后单独写，免得乱流）
+    data.waterlogged = n_waterlog  # 含水方块数（方块 + 水）
+    out["data"] = data
+    yield expect, expect
+
+
+def load_prepared(dec, name=None, skip_air=True, skip_void=True):
+    """从「已解压的裸 NBT」一次性构建结构（后台线程 / 老调用点走这里）"""
+    out = {}
+    for _prog in iter_load_prepared(dec, name, skip_air, skip_void,
+                                    chunk=1 << 30, out=out):
+        pass
+    data = out.get("data")
+    if data is None:
+        raise ValueError("解析未产出结构")
+    return data
 
 
 def _wrap_plain_compound(d):

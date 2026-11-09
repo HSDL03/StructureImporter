@@ -232,7 +232,7 @@ HELP = [
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
     u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
-    u"§f/structureim threads <1-8> §7结构解析线程（1=主线程，>=2=后台解析不卡）",
+    u"§f/structureim threads <1-8> §7解析方式（1=主线程分帧，>=2=后台线程，两者都不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
     u"§f/structureim nbtlimit <0|8-1024> §7物品NBT上限KB，0=不裁剪（默认）",
     u"§f/structureim freeze <开|关> §7导入期间冻结时间流逝（水不乱跑，默认开）",
@@ -243,15 +243,33 @@ HELP = [
 
 
 def _bg_load(path, name, box):
-    """后台线程里跑的结构解析
+    """后台线程里跑的结构解析（分片推进，每片之间让出 GIL）
 
     只做「读文件 + 解压 + NBT 遍历」，**绝不调用任何引擎接口**
     （SetBlockNew 之类必须在主线程，跨线程调会崩）。
     结果/异常统一塞进 box，由主线程在 tick 里取走。
+
+    为什么还要分片 sleep：纯 Python 的解析循环一直转就会一直攥着 GIL，
+    引擎线程拿不到时间片，游戏照样一顿一顿的（甚至像卡死）。
+    每片之间 sleep 一下，引擎就有机会跑完这一帧。
     """
     try:
         dec = mcst.read_decompress(path)
-        box["data"] = mcst.load_prepared(dec, name, cfg.SKIP_AIR, cfg.SKIP_VOID)
+        out = {}
+        gen = mcst.iter_load_prepared(dec, name, cfg.SKIP_AIR, cfg.SKIP_VOID,
+                                       chunk=cfg.BG_PARSE_CHUNK, out=out)
+        while True:
+            try:
+                done, total = next(gen)
+            except StopIteration:
+                break
+            box["done"] = done
+            box["total"] = total
+            time.sleep(cfg.BG_PARSE_SLEEP)     # 让出 GIL，引擎照常出帧
+        data = out.get("data")
+        if data is None:
+            raise ValueError("解析未产出结构")
+        box["data"] = data
     except Exception:
         box["err"] = traceback.format_exc()
 
@@ -365,6 +383,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.parallel = cfg.PARALLEL_DEFAULT     # 相邻分区并行：提前加载几个邻区
         self.nbt_limit = cfg.ITEM_NBT_MAX_KB     # 物品 NBT 上限（0=不裁剪）
         self._bg = None                          # 正在后台解析的任务
+        self._pj = None                          # 正在主线程分帧解析的任务（不卡版）
         self.last_bpt = 0.0                      # 上次实测「每 tick 写多少块」，用于预估耗时
         self._page = 0
         self.map_queue = None    # 导入完成后逐个发的地图
@@ -820,6 +839,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 self._clear_areas(self.job)
             self.job = None
             self._bg = None            # 后台解析结果直接丢弃（线程跑完自然退出）
+            self._pj = None            # 分帧解析同样直接丢弃
             if self.map_queue:
                 for _ci in _range(len(self.map_queue.get("cells") or [])):
                     self._map_ta_del(self.map_queue, _ci)
@@ -1333,19 +1353,83 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
     # ------------------------------------------------------------ 放置
     def start_job(self, pid, entry, rotation):
-        """放置入口：线程数 >=2 且文件够大 -> 解析丢后台，其余照旧同步"""
+        """放置入口：线程数 >=2 且文件够大 -> 后台线程解析，其余走主线程分帧
+
+        两条路都**不会一次性把主线程占住**：后台线程每片之间让出 GIL，
+        主线程分帧每 tick 只花 cfg.PARSE_SLICE_MS 毫秒。
+        """
         if self.threads > 1 and self._need_bg(entry):
             self._bg_start(pid, entry, rotation)
             return
-        t0 = time.time()
-        try:
-            data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
-        except Exception as exc:
-            util.log_exc("load " + entry.path)
-            self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
+        self._pj_start(pid, entry, rotation)
+
+    # ------------------------------------------------------------ 分帧解析（主线程）
+    def _pj_start(self, pid, entry, rotation):
+        """不卡版解析：主线程一帧一帧推，每帧最多 PARSE_SLICE_MS 毫秒"""
+        if self._pj is not None:
+            self.tell(pid, u"§e上一份结构还在解析，等它一下")
             return
-        self._parse_secs = time.time() - t0
-        self._begin_job(pid, entry, rotation, data)
+        self._pj = {"pid": pid, "entry": entry, "rot": rotation,
+                    "gen": None, "out": {}, "t0": time.time(),
+                    "last": 0.0, "done": 0, "expect": 0}
+        self._tip_raw(u"§b⏳ 结构导入 §7读取中 §f%s" %
+                      util.short(entry.rel, 28))
+
+    def _parse_step(self):
+        """推进分帧解析一小片；返回 True 表示这一帧还在解析
+
+        分片粒度 PARSE_CHUNK 块 ≈ 几毫秒，再配合 PARSE_SLICE_MS 预算：
+        单帧最多花几毫秒，引擎该出的帧照出，玩家不会看到"卡住不动"。
+        """
+        pj = self._pj
+        if pj is None:
+            return False
+        if pj["gen"] is None:
+            # 第一帧只做「读文件 + 解压」：通常几十毫秒，无法再切
+            try:
+                dec = mcst.read_decompress(pj["entry"].path)
+            except Exception as exc:
+                util.log_exc("load " + pj["entry"].path)
+                self._pj = None
+                self.tell(pj["pid"], u"§c读取失败：§f%s" % util.u(exc))
+                return False
+            pj["gen"] = mcst.iter_load_prepared(
+                dec, pj["entry"].name, cfg.SKIP_AIR, cfg.SKIP_VOID,
+                chunk=cfg.PARSE_CHUNK, out=pj["out"])
+            return True
+        deadline = time.time() + cfg.PARSE_SLICE_MS / 1000.0
+        gen = pj["gen"]
+        try:
+            while True:
+                done, total = next(gen)
+                pj["done"], pj["expect"] = done, total
+                if time.time() >= deadline:
+                    break
+        except StopIteration:
+            data = pj["out"].get("data")
+            pid, entry, rot = pj["pid"], pj["entry"], pj["rot"]
+            secs = time.time() - pj["t0"]
+            self._pj = None
+            if data is None:
+                self.tell(pid, u"§c解析失败：没有拿到数据")
+                return False
+            self._parse_secs = secs
+            self._begin_job(pid, entry, rot, data)
+            return False
+        except Exception:
+            tb = traceback.format_exc()
+            util.log(u"分帧解析异常\n" + util.u(tb))
+            self._pj = None
+            self.tell(pj["pid"], u"§c读取失败：§f" + util.short(
+                util.u(tb.strip().splitlines()[-1]), 60))
+            return False
+        now = time.time()
+        if now - pj["last"] >= 0.5:
+            pj["last"] = now
+            pct = int(100.0 * pj["done"] / max(1, pj["expect"]))
+            self._tip_raw(u"§b⏳ 结构导入 §7解析中 §f%s §7· %d%% · %.1f 秒" %
+                          (util.short(pj["entry"].rel, 26), pct, now - pj["t0"]))
+        return True
 
     # ------------------------------------------------------------ 多线程解析
     def _need_bg(self, entry):
@@ -1370,14 +1454,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             util.log_exc("thread")
             th = None
         if th is None:
-            # 环境不支持线程 -> 老实同步解析，功能不受影响
-            try:
-                data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
-            except Exception as exc:
-                util.log_exc("load " + entry.path)
-                self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
-                return
-            self._begin_job(pid, entry, rotation, data)
+            # 环境不支持线程 -> 退到主线程分帧解析，一样不卡
+            self._pj_start(pid, entry, rotation)
             return
         self._bg = {"th": th, "box": box, "pid": pid, "entry": entry,
                     "rot": rotation, "t0": time.time(), "last": 0.0}
@@ -1386,13 +1464,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         except Exception:
             util.log_exc("thread start")
             self._bg = None
-            data = None
-            try:
-                data = mcst.load(entry.path, entry.name, cfg.SKIP_AIR, cfg.SKIP_VOID)
-            except Exception as exc:
-                self.tell(pid, u"§c读取失败：§f%s" % util.u(exc))
-                return
-            self._begin_job(pid, entry, rotation, data)
+            self._pj_start(pid, entry, rotation)
             return
         self._tip_raw(u"§b⏳ 结构导入 §7后台解析中 §f%s §7· 引擎线程不受影响" %
                       util.short(entry.rel, 28))
@@ -1411,8 +1483,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if now - bg["last"] >= 0.5:
                 bg["last"] = now
                 # 解析进度也只走下方小栏，别在聊天框每秒刷一条
-                self._tip_raw(u"§b⏳ 结构导入 §7解析中 §f%s §7· %.1f 秒" %
-                              (util.short(bg["entry"].rel, 28), now - bg["t0"]))
+                _d = int(bg["box"].get("done") or 0)
+                _t = int(bg["box"].get("total") or 0)
+                _pct = int(100.0 * _d / _t) if _t else 0
+                self._tip_raw(u"§b⏳ 结构导入 §7解析中 §f%s §7· %d%% · %.1f 秒" %
+                              (util.short(bg["entry"].rel, 28), _pct, now - bg["t0"]))
             return
         self._bg = None
         box = bg["box"]
@@ -2385,6 +2460,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._manual_fix_tick()
         job = self.job
         if job is None:
+            if self._pj is not None:
+                self._parse_step()          # 主线程分帧解析：每帧只花几毫秒
+                return
             if self._bg is not None:
                 self._poll_bg()
                 return
