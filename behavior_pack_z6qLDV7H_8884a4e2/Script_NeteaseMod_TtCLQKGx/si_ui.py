@@ -329,6 +329,8 @@ class SiSettingScreen(ScreenNode):
         self._touch("si_pre_balance", self._on_preset("balance"))
         self._touch("si_pre_turbo", self._on_preset("turbo"))
         self._touch("si_set_close", self._on_close)
+        # 底部那个「关闭」按钮：右上角的 ✕ 太小，很多人都没找到
+        self._touch("si_set_close2", self._on_close)
         for i, row in enumerate(SET_ROWS):
             self._render_row(i, 0)
         data = self.sys.last_data if self.sys is not None else None

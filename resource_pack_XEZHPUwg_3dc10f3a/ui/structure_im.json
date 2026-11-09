@@ -822,7 +822,7 @@
     },
     "si_spr_close_press": {
         "type": "image",
-        "texture": "textures/ui/si_close_hover",
+        "texture": "textures/ui/si_close_press",
         "nineslice_size": 6,
         "size": [
             "100%",

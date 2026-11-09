@@ -44,14 +44,14 @@
     "si_set_close": {
         "type": "button",
         "size": [
-            "20px",
-            "20px"
+            "32px",
+            "32px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            312,
-            -182.0
+            306,
+            -176.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
@@ -67,7 +67,7 @@
             0,
             0
         ],
-        "$label_text": "✕",
+        "$label_text": "",
         "controls": [
             {
                 "default@structure_im.si_spr_close": {}
@@ -2155,6 +2155,51 @@
         "hover_control": "hover",
         "pressed_control": "pressed"
     },
+    "si_set_close2": {
+        "type": "button",
+        "size": [
+            "90px",
+            "22px"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "offset": [
+            250,
+            148.0
+        ],
+        "layer": 2,
+        "$control_alpha": 1.0,
+        "$label_color": [
+            0.92,
+            0.93,
+            0.95
+        ],
+        "$label_font_scale_factor": 0.58,
+        "$label_font_size": "normal",
+        "$label_layer": 3,
+        "$label_offset": [
+            0,
+            0
+        ],
+        "$label_text": "关闭",
+        "controls": [
+            {
+                "default@structure_im.si_spr_btn": {}
+            },
+            {
+                "hover@structure_im.si_spr_btn_hover": {}
+            },
+            {
+                "pressed@structure_im.si_spr_btn_press": {}
+            },
+            {
+                "button_label@netease_editor_template_namespace.button_label": {}
+            }
+        ],
+        "default_control": "default",
+        "hover_control": "hover",
+        "pressed_control": "pressed"
+    },
     "si_hint": {
         "type": "label",
         "anchor_from": "center",
@@ -2394,6 +2439,9 @@
             },
             {
                 "si_pre_turbo@structure_im_set.si_pre_turbo": {}
+            },
+            {
+                "si_set_close2@structure_im_set.si_set_close2": {}
             },
             {
                 "si_hint@structure_im_set.si_hint": {}
