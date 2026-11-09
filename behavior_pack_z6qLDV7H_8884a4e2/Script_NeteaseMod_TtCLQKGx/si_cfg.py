@@ -25,7 +25,7 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "splitz", "map",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "splitz", "verify", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
                "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast", "ta",
                "manual", "help2"]
@@ -34,7 +34,7 @@ CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "s
 # SetExtraData 只接受 str，中文必须编码成 utf-8 字节串
 EXTRA_KEY = "si_dir"
 # 配置版本：低于这个值的存档会被迁移（2 = 地图画速度档强制回到「稳」）
-CFG_VERSION = 2
+CFG_VERSION = 3
 
 # ---------------------------------------------------------------- 分区导入
 SPLIT_DEFAULT = False     # 默认关，用 /structureim split on 或界面按钮打开
@@ -92,6 +92,16 @@ BG_LOAD_MIN_KB = 128           # 小于这个体积的结构同步解析更快�
 # 主线程每 tick 最多花 PARSE_SLICE_MS 毫秒推进解析，剩下的下一帧接着来。
 # 总时长会略长，但引擎始终保持可响应（不会出现"点了没反应"的假死）。
 PARSE_SLICE_MS = 6            # 主线程每 tick 给解析的预算（毫秒）
+
+# ---------------------------------------------------------------- 全程不卡（分帧）
+# 除了解析和写方块，"点下去"和"收尾"这两处也曾经是一次性跑完的：
+# 写入前的扫描（40 万块 × 二十多个关键字子串判断）实测几百毫秒到几秒，
+# 就是玩家看到的"点导入，游戏僵一下"。这些也一并摊到多帧。
+PREP_SLICE_MS = 8             # 扫描/分区每 tick 预算（毫秒）
+VERIFY_SLICE_MS = 8           # 回读校验每 tick 预算（毫秒）
+TICK_GUARD_MS = 26            # 单 tick 超过这个毫秒数就自动降速（自保，绝不让一帧卡住）
+TP_READY_MAX = 40             # 跟随 TP 后最多等多少 tick（区块就绪会提前开工）
+VERIFY_PASSES = 3             # 逐块回读校验最多跑几轮（第一轮补写后再验一次）
 PARSE_CHUNK = 8000            # 一片解析多少个方块（越小越细，单片耗时越短）
 BG_PARSE_CHUNK = 16000        # 后台线程一片多少块
 BG_PARSE_SLEEP = 0.002        # 后台线程每片之间让出 GIL 的秒数（引擎不掉帧）
@@ -108,6 +118,10 @@ BIG_FILE_BLOCKS = 150000  # 超过这个数就自动强制分块模式
 TP_FOLLOW = True          # 导入时玩家自动跟随当前分区传送（保证区块加载）
 TP_MIN_DIST = 48          # 分区中心离玩家超过这个距离才 TP
 TP_LOAD_WAIT = 40         # 跟随 TP 后强制等多少 tick（2 秒）给区块加载
+# 回读校验（稳）：写完以后把每一块都读一遍，名字对不上就补写。
+# 这是"一块都不漏"的兜底——引擎在区块没完全加载、液体流动、支撑判断时
+# 都可能悄悄丢掉某一块，写入返回成功并不代表真的写上了。
+VERIFY_DEFAULT = True
 TP_LOAD_WAIT_TURBO = 6    # 急速模式：TP 后只等 0.3 秒，剩余交给写失败自动重试
 TP_BIG_JUMP = 128         # 跟随 TP 一步跳多远算"跨行远传"（竖排导入换行最典型）
 TP_BIG_WAIT = 80          # 跨行远传后强制等多少 tick（4 秒）让区块追上，再恢复原速
@@ -126,13 +140,13 @@ MAP_AREA_SQUARE = True     # 常加载形状：True 方形（一次盖住整幅�
 #          ③每区等待从"秒级"降到"tick 级"（区块本来就都加载着）
 # 0 = 稳（默认：老的圆形常加载 + 每区按秒等，最保险）  1 = 快  2 = 极速
 # 挂画阶段一旦报错就留在 0，别开 1/2：快档的等待被压到 tick 级，区块没跟上就会缺图/报错
-MAP_SPEED_DEFAULT = 0
+MAP_SPEED_DEFAULT = 2
 MAP_SQ_Y = 40              # 方形常加载的纵向厚度（区块只看 xz，给够就行）
 MAP_TA_WAIT_FAST = 30      # 快档：本张图第一次挂常加载后等多少 tick
 MAP_ZONE_WAIT = 10         # 快档：巡逻每个区停多少 tick
 MAP_ZONE_WAIT_FAST = 4     # 极速档：每区停多少 tick
 MAP_HOLD_TICKS = 30        # 快档：地图在主手停留多少 tick（1.5 秒）
-MAP_HOLD_FAST = 10         # 极速档：0.5 秒
+MAP_HOLD_FAST = 20         # 极速档：1 秒（再短个别图会画不满）
 MAP_PREFETCH = True        # 快档/极速档：提前给下一张图挂常加载（overlap 掉等待）
 MAP_MOUNT_BATCH = 4        # 挂框每 tick 挂几张（原来一张 5 tick，10 张要 2.5 秒）
 MAP_MOUNT_WAIT = 20        # 全部画完回墙前等多少 tick（墙区块加载）

@@ -229,6 +229,7 @@ HELP = [
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
+    u"§f/structureim verify <开|关> §7导完逐块回读校验，缺的补写（默认开）",
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
     u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
@@ -569,6 +570,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             left = max(0, job.seal_until - job.tick) / 20.0
             text = u"§3■ 结构导入 §f静默守护 §7· 巡检 %d 格 §7· 补 %d §7· 剩 %.0fs" % (
                 len(job.sealed), job.seal_fixes, left)
+        elif job.phase == "prep":
+            cur = int((job.prep or {}).get("cursor") or 0)
+            text = u"§b▶ 结构导入 §7准备分区 §f%d/%d §7· 扫描方块（分帧，不卡）" % (
+                cur, job.total)
+        elif job.phase == "verify":
+            text = u"§b▶ 结构导入 §9逐块校验 §f%d/%d §7· 第 %d 轮 §7· 已补 %d" % (
+                int(getattr(job, "vf_cursor", 0) or 0), job.total,
+                int(getattr(job, "vf_pass", 0) or 0) + 1,
+                int(getattr(job, "vf_fixed", 0) or 0))
         else:
             phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
                      u"ents": u"§d方块实体", u"items": u"§d容器物品",
@@ -609,6 +619,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._cfg_ver = 0                        # 存档里的配置版本（用于一次性迁移）
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
         self.ta_mode = cfg.TA_MODE_DEFAULT       # 纯常加载：不跟随 TP，全结构挂 tickingarea
+        self.verify = cfg.VERIFY_DEFAULT         # 收尾逐块回读校验（不漏块）
+        self._guard_scale = 1.0                  # 单 tick 超时后自动降速的系数
         self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
         try:
             raw = self.factory.CreateExtraData(self.levelId).GetExtraData(cfg.EXTRA_KEY)
@@ -702,6 +714,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.map_area = util.u(raw.get("maparea")) != u"0"
                 if raw.get("ta") is not None:
                     self.ta_mode = util.u(raw.get("ta")) == u"1"
+                if raw.get("verify") is not None:
+                    self.verify = util.u(raw.get("verify")) != u"0"
             elif raw:
                 path = util.u(raw)
         except Exception:
@@ -735,6 +749,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "mapspeed": util.b(str(self.map_speed)),
                  "maparea": util.b(u"1" if self.map_area else u"0"),
                  "ta": util.b(u"1" if self.ta_mode else u"0"),
+                 "verify": util.b(u"1" if self.verify else u"0"),
                  "cfgver": util.b(str(cfg.CFG_VERSION)),
                  "nbtlimit": util.b(str(self.nbt_limit))})
         except Exception:
@@ -879,6 +894,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
+        elif action in (u"verify", u"check"):
+            self.cmd_verify(pid, a1)
         elif action in (u"splitz", u"sidesz", u"side"):
             self.cmd_splitz(pid, a1)
         elif action == u"fast":
@@ -938,6 +955,25 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§6第 %d/%d 页" % (page, pages))
         for i in range(start, min(start + cfg.ROWS, len(lib.entries))):
             self.tell(pid, u"§7%d. §f%s" % (i + 1, util.short(lib.entries[i].rel, 40)))
+
+    def cmd_verify(self, pid, text):
+        """收尾逐块回读校验：写完再读一遍，缺哪块补哪块（默认开）"""
+        t = (text or u"").strip().lower()
+        if t in (u"on", u"1", u"开", u"true"):
+            v = True
+        elif t in (u"off", u"0", u"关", u"false"):
+            v = False
+        elif not t:
+            v = not self.verify
+        else:
+            self.tell(pid, u"§e用法：/structureim verify <开|关> §7当前 %s" %
+                      (u"开" if self.verify else u"关"))
+            return
+        self.verify = v
+        self._save()
+        self.tell(pid, u"§a逐块回读校验：§f%s §7（%s）" %
+                  (u"开" if v else u"关",
+                   u"导完把每一块读一遍，缺的自动补写" if v else u"只看写入返回值，快一点但可能漏"))
 
     def cmd_splitz(self, pid, text):
         """分区边长：0 = 自动按体量自适应；16~128 = 自定义固定边长"""
@@ -1170,11 +1206,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.parallel = max(3, cfg.PARALLEL_DEFAULT)
         self.turbo = True
         self.budget = cfg.WRITE_BUDGET_MS_TURBO
+        # 地图画 640×640 要在 120 秒内落地，光靠写入提速不够：
+        # 25 张图每张都要"挂常加载 -> 站进去 -> 让引擎画"，
+        # 这里把地图档一起拉到极速（单张 ≈2 秒），并保持回读校验不关。
+        self.map_speed = 2
+        if not self.split_size:
+            self.split_size = int(cfg.SPLIT_SIZE_MAX)
         self._save()
-        self.tell(pid, u"§a已切到提速组合：§f线程 %d · 邻区并行 %d · 急速 · 预算 %.0f ms" %
-                  (self.threads, self.parallel, self.budget))
-        self.tell(pid, u"§7大结构会自动分区（边长按体量放大到 %d 格），不用手动开 split" %
-                  cfg.SPLIT_SIZE_MAX)
+        self.tell(pid, u"§a已切到提速组合：§f线程 %d · 邻区并行 %d · 急速 · 预算 %.0f ms · 地图极速 · 分区 %d 格" %
+                  (self.threads, self.parallel, self.budget, self.split_size))
+        self.tell(pid, u"§7回读校验仍然开着（不漏块）；觉得慢可 /structureim verify off")
 
     def cmd_nbtlimit(self, pid, text):
         """物品 NBT 上限：0 = 不裁剪（默认，盒中盒原样保留）"""
@@ -1537,35 +1578,28 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                        int(math.ceil((max(b[0] for b in blocks) - min(b[0] for b in blocks) + 1) / float(ms))) *
                        int(math.ceil((max(b[2] for b in blocks) - min(b[2] for b in blocks) + 1) / float(ms)))))
 
-        # 红石相关方块最后再触发一次邻居更新，否则刚放下去时容易被判成"失去支撑"
-        # 注意：门/铁轨/告示牌这类多格或靠支撑的方块一律不进唤醒批次——
-        # 带邻居更新重写它们，等于当场告诉引擎"重新检查支撑"，写一半就掉了。
-        wake = []
-        wash = []
-        for i in range(len(blocks)):
-            low = blocks[i][3].lower()
-            if not any(kw in low for kw in cfg.WAKE_SKIP):
-                for kw in cfg.REDSTONE_HINTS:
-                    if kw in low:
-                        wake.append(i)
-                        break
-            if any(kw in low for kw in cfg.WASH_HINTS):
-                wash.append(i)
-
         # 分区边长按体量自适应：大平面不再被切成两千多个小区（每区才 256 块，
         # 换区开销比写方块还贵）。side 同时用于"跨行远传"的判定。
         side = self._pick_split_size(blocks)
-        sections = self._build_sections(blocks, wake, ents, use_chunk, side)
+        # 扫描（红石唤醒 / 补水候选 / 液体 / 分区归属）与分区构建全部挪到
+        # prep 阶段分帧做：40 万块 × 二十多个关键字子串判断一次性跑完要
+        # 几百毫秒到几秒，正是"点导入，游戏僵一下"的来源。
+        wake = []
+        wash = []
+        sections = []
         self.job = Job(pid, entry.rel, blocks, base, dim, ents, wake, sections, mobs)
+        self.job.sections = []           # Job 默认会给个"全部"占位，这里先清空
+        self.job.phase = "prep"
+        self.job.prep = {"cursor": 0, "wake": [], "wash": [], "liq": [],
+                         "groups": {}, "side": side, "use_chunk": bool(use_chunk)}
         self.job.parse_secs = float(getattr(self, "_parse_secs", 0.0) or 0.0)
         self.job.side = side
-        self.job.wash_idx = wash
         if self.ta_mode:
             self._ta_cover(self.job)
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
         self.job.speed_ticks = int(self.tick_speed) * 20
-        self.job.liquid_idx = list(self._liquid_idx)
+        self.job.liquid_idx = []          # prep 收尾时按实际扫描结果填
         self.job.freeze = bool(self.freeze)
         if self.job.freeze:
             self._freeze_off()         # 先把上一次可能残留的规则还原，再按
@@ -1604,8 +1638,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             est += self.freeze_secs
         bits.append(u"预计耗时 %.1f 秒" % est)
         self.tell(pid, u"§7" + u" · ".join(bits))
-        self._prepare_section(self.job)
-        self.push(pid, 0)
+        self.push(pid, 0)          # prep 阶段跑完后自己进第一个分区
 
     # ------------------------------------------------------------ 地图画模式
     # 地图画模式：玩家面前搭一面"地图墙"（墙块 + 展示框方块），地图按编号挂上去
@@ -2477,7 +2510,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 if job.tick % 20 == 0:
                     self._show_tip(job)
                 return
+            _t0 = time.time()
             self._step(job)
+            self._guard((time.time() - _t0) * 1000.0)
         except Exception:
             tb = traceback.format_exc()
             util.log(u"tick 异常\n" + util.u(tb))
@@ -2502,14 +2537,22 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.tick += 1
         if job.waiting:
             if job.tick < job.wait_until:
-                if job.tick % 10 == 0:
-                    self._show_tip(job)      # 等区块时也刷进度
-                return
+                # 就绪探测：区块已经加载好就不用把剩余 tick 等满（快）
+                if getattr(job, "ready_probe", False) and self._section_ready(job):
+                    job.waiting = False
+                    job.ready_probe = False
+                else:
+                    if job.tick % 10 == 0:
+                        self._show_tip(job)      # 等区块时也刷进度
+                    return
             job.waiting = False
+            job.ready_probe = False
         job.work_ticks += 1
         if job.tick % 10 == 0 or job.tick == 1:
             self._show_tip(job)
-        if job.phase == "blocks":
+        if job.phase == "prep":
+            self._step_prep(job)
+        elif job.phase == "blocks":
             self._step_blocks(job, comp)
         elif job.phase == "retry":
             self._step_retry(job, comp)
@@ -2527,6 +2570,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._step_wash(job, comp)
         elif job.phase == "seal":
             self._step_seal(job, comp)
+        elif job.phase == "verify":
+            self._step_verify(job, comp)
         else:
             job.phase = "done"
 
@@ -2581,7 +2626,25 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         b = self.budget
         if self.turbo:
             b = max(b, cfg.WRITE_BUDGET_MS_TURBO)
-        return b
+        scale = float(getattr(self, "_guard_scale", 1.0) or 1.0)
+        return b * scale if scale < 1.0 else b
+
+    def _guard(self, used_ms):
+        """单帧护栏：这一步花超了就自动降速，绝不让"导入把游戏卡住一秒"发生
+
+        正常走时间预算不会超；但引擎某次写特别慢、或一次刷新了几百个方块实体时，
+        单帧还是可能超。这里兜底：超了就把下几帧的写入预算与批量一起压小，
+        连续没超再慢慢放回去（0.5 倍速度恢复，避免忽快忽慢）。
+        """
+        if used_ms >= cfg.TICK_GUARD_MS:
+            self._guard_scale = max(0.25, self._guard_scale * 0.6)
+            job = self.job
+            if job is not None:
+                job.batch = max(cfg.WRITE_BATCH_MIN, int(job.batch * 0.6))
+            util.log(u"单帧 %.0f ms 超护栏，自动降速到 %.0f%%" %
+                     (used_ms, self._guard_scale * 100))
+        elif self._guard_scale < 1.0:
+            self._guard_scale = min(1.0, self._guard_scale * 1.08)
 
     def _tune(self, job, written, used_ms, hit_time):
         """按实测吞吐把下一 tick 的批量调到刚好贴着预算（自适应）"""
@@ -2609,6 +2672,116 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         这里只把状态记到 job.note，下一次 tip 刷新时作为一小段附在下方小栏里。
         """
         job.note = text
+
+    def _step_prep(self, job):
+        """写入前的扫描与分区（分帧做，一帧最多 PREP_SLICE_MS 毫秒）
+
+        每块要判：是不是液体、归哪个分区、要不要进红石唤醒批次、要不要进补水批次。
+        这几步都是字符串子串匹配，几十万块乘二十多个关键字，一次性跑完就是
+        "点下去卡一下"。分帧之后总时长只多几帧，但没有任何一帧会卡。
+        """
+        st = job.prep
+        blocks = job.blocks
+        n = len(blocks)
+        side = st["side"]
+        groups = st["groups"]
+        wake = st["wake"]
+        wash = st["wash"]
+        liq = st["liq"]
+        # 关键提速：整张结构里方块名字的种类一般只有几十种，先按"唯一名字"
+        # 把要不要唤醒/要不要补水算一次，逐块只做字典查表。
+        # 400k 块 × 20 多个关键字子串判断 -> 400k 次 dict.get，差两个数量级。
+        if "flags" not in st:
+            flags = {}
+            for nm in set([b[3] for b in blocks]):
+                low = nm.lower()
+                wake_hit = False
+                if not any(kw in low for kw in cfg.WAKE_SKIP):
+                    for kw in cfg.REDSTONE_HINTS:
+                        if kw in low:
+                            wake_hit = True
+                            break
+                wash_hit = False
+                for kw in cfg.WASH_HINTS:
+                    if kw in low:
+                        wash_hit = True
+                        break
+                flags[nm] = (nm in cfg.LIQUID_BLOCKS, wake_hit, wash_hit)
+            st["flags"] = flags
+        flags = st["flags"]
+        no_flag = (False, False, False)
+        t0 = time.time()
+        budget = cfg.PREP_SLICE_MS
+        cur = st["cursor"]
+        while cur < n:
+            x, y, z, name, aux, states = blocks[cur]
+            is_liq, wake_hit, wash_hit = flags.get(name, no_flag)
+            if is_liq:
+                liq.append(cur)              # 液体最后单独放，不进分区
+            else:
+                key = (int(x) // side, int(z) // side)
+                g = groups.get(key)
+                if g is None:
+                    g = groups[key] = {"blocks": [], "wake": [], "ents": [],
+                                       "label": u"%d,%d" % key}
+                g["blocks"].append(cur)
+                if wake_hit:
+                    # 门/铁轨这类多格方块在 flags 里已排除：带邻居更新重写会掉落
+                    g["wake"].append(cur)
+                    wake.append(cur)
+                if wash_hit:
+                    wash.append(cur)
+            cur += 1
+            # 每 256 块探一次时间，到点收手
+            if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        st["cursor"] = cur
+        if cur < n:
+            return
+        # 实体归区（数量少，一遍过）
+        ents = job.entities
+        for i in _range(len(ents)):
+            e = ents[i]
+            key = (int(e[0]) // side, int(e[2]) // side)
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {"blocks": [], "wake": [], "ents": [],
+                                   "label": u"%d,%d" % key}
+            g["ents"].append(i)
+        self._prep_finish(job)
+
+    def _prep_finish(self, job):
+        """扫描完成后把分区定下来（这一步只剩排序，几十毫秒内）"""
+        st = job.prep
+        blocks = job.blocks
+        side = st["side"]
+        self._liquid_idx = st["liq"]
+        if st["use_chunk"]:
+            # 手动分块模式：仍按数据量再切 Y 带（少见的主动选择）
+            sections = self._build_sections(blocks, st["wake"], job.entities,
+                                            True, side)
+        elif not (self.split or self.tick_mode or side > cfg.SPLIT_SIZE):
+            # 不分区：整张结构一个分区，液体单独挑出去最后放
+            liqset = set(st["liq"])
+            blk = [i for i in _range(len(blocks)) if i not in liqset]
+            sections = [{"blocks": blk, "wake": st["wake"],
+                         "ents": _range(len(job.entities)), "label": u"全部"}]
+        else:
+            keys = sorted(st["groups"].keys())
+            sections = [st["groups"][k] for k in keys
+                        if st["groups"][k]["blocks"] or st["groups"][k]["ents"]]
+            if not sections:
+                # 整张都是水：留个空分区占位，否则流程直接结束，水永远不放
+                sections = [{"blocks": [], "wake": [], "ents": [], "label": u"全部"}]
+        job.sections = sections
+        job.wake = st["wake"]
+        job.wash_idx = st["wash"]
+        job.liquid_idx = list(self._liquid_idx)
+        job.prep = None
+        job.sec_i = 0
+        job.cursor = 0
+        job.phase = "blocks"
+        self._prepare_section(job)
 
     def _step_blocks(self, job, comp):
         sec = self._section(job)
@@ -2921,7 +3094,90 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if job.tick < job.seal_until:
                 job.phase = "seal"
                 return
+        # 最后一道保险：逐块回读，名字对不上就补写（"一块都不漏"就靠这里）
+        if self.verify and not getattr(job, "vf_done", False):
+            job.phase = "verify"
+            if getattr(job, "vf_pass", 0) == 0 and \
+                    getattr(job, "vf_cursor", 0) == 0 and \
+                    not getattr(job, "vf_announced", False):
+                job.vf_announced = True
+                job.note = u"§9逐块回读校验（%d 块）" % job.total
+            return
         job.phase = "done"
+
+    @staticmethod
+    def _same_block(got_name, want_name):
+        """回读比对用的名字归一：水/岩浆的流动变体算同一块"""
+        if got_name == want_name:
+            return True
+        if not got_name or not want_name:
+            return False
+        if "water" in want_name:
+            return "water" in got_name
+        if "lava" in want_name:
+            return "lava" in got_name
+        return False
+
+    def _step_verify(self, job, comp):
+        """逐块回读校验：写完不等于写上了，读一遍才知道
+
+        引擎在三种情况下会"写成功但其实没写上"：区块还没完全加载、
+        液体流动把方块冲掉、支撑方块判断把火把/铁轨弹掉。分区末尾的重试
+        只覆盖第一种，而且是"写返回失败"才重试。所以收尾这里再整体读一遍：
+        读不到（区块没加载）不算缺失，留到下一轮；读到了名字不对就补写。
+        补写过就再验一轮，最多 VERIFY_PASSES 轮。
+        """
+        total = job.total
+        blocks = job.blocks
+        bx, by, bz = job.base
+        dim = job.dim
+        t0 = time.time()
+        budget = cfg.VERIFY_SLICE_MS
+        cur = int(getattr(job, "vf_cursor", 0) or 0)
+        fixed = int(getattr(job, "vf_fixed", 0) or 0)
+        pass_fixed = int(getattr(job, "vf_pass_fixed", 0) or 0)
+        unloaded = 0
+        while cur < total:
+            x, y, z, name, aux, states = blocks[cur]
+            cur += 1
+            pos = (bx + x, by + y, bz + z)
+            try:
+                got = comp.GetBlockNew(pos, dim)
+            except Exception:
+                got = None
+            if got is None:
+                unloaded += 1            # 区块没加载：不是缺失，下一轮再看
+            else:
+                gname = got.get("name") if isinstance(got, dict) else None
+                if not self._same_block(gname, name):
+                    try:
+                        if self._place_one(comp, pos, name, aux, states, dim, False):
+                            fixed += 1
+                            pass_fixed += 1
+                    except Exception:
+                        pass
+            if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        job.vf_cursor = cur
+        job.vf_fixed = fixed
+        job.vf_pass_fixed = pass_fixed
+        job.vf_unloaded = unloaded
+        if cur < total:
+            return
+        # 一轮读完
+        job.vf_pass = int(getattr(job, "vf_pass", 0) or 0) + 1
+        job.vf_cursor = 0
+        if job.vf_pass_fixed > 0 and job.vf_pass < cfg.VERIFY_PASSES:
+            job.vf_pass_fixed = 0
+            return                      # 这一轮补写过 -> 再验一轮确认全绿
+        job.vf_done = True
+        if job.vf_fixed:
+            self.tell(job.pid, u"§a回读校验：§f补写 %d 块§7（%d 轮，共 %d 块）" %
+                      (job.vf_fixed, job.vf_pass, total))
+        if job.vf_unloaded:
+            self.tell(job.pid, u"§e有 %d 块因区块未加载没能复核，验收时留意一下" %
+                      job.vf_unloaded)
+        self._final_phase(job)
 
     def _step_mobs(self, job):
         """生成结构里的实体
@@ -3233,6 +3489,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 keep.append((idx, name))
         job.pf = keep
 
+    def _section_ready(self, job):
+        """当前分区所在区块是否已经加载好：能读到这一区的第一块就算就绪
+
+        以前这里一律死等 40 tick（2 秒）或急速档 6 tick —— 不管区块早就好了。
+        实测绝大多数换区 1~3 tick 就加载完，固定等待白扔掉的正是"快"的空间。
+        改成"读一下就知道"：就绪立刻开工，最多等到 TP_READY_MAX 兜底。
+        """
+        sec = self._section(job)
+        if sec is None or not sec["blocks"]:
+            return True
+        comp = self._blocks()
+        if comp is None:
+            return True
+        try:
+            b = job.blocks[sec["blocks"][0]]
+            got = comp.GetBlockNew((job.base[0] + b[0], job.base[1] + b[1],
+                                    job.base[2] + b[2]), job.dim)
+        except Exception:
+            return False
+        return got is not None
+
     def _prepare_section(self, job):
         """进入分区前的准备：跟随 TP + 防缺失时挂常加载区块"""
         # 先取本区：下面的等待逻辑要看它是否已被预取（提前赋值，别留局部变量坑）
@@ -3246,9 +3523,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             # 自动重试兜底——这才是急速的本意，不能让强制等待把它盖掉
             job.waiting = True
             if self.ta_mode:
-                # 纯常加载：首区等常加载真正把区块拉起来，之后各区只留小间隔
+                # 纯常加载：首区等常加载真正把区块拉起来，之后各区只留小间隔。
+                # 同样带就绪探测：区块一好就开工，不等满
                 wait = cfg.TA_FIRST_WAIT if job.sec_i == 0 else cfg.TA_WAIT
                 job.wait_until = job.tick + wait
+                job.ready_probe = True
                 job.tp_wait = 0
                 return
             wait = cfg.TP_LOAD_WAIT_TURBO if self.turbo else cfg.TP_LOAD_WAIT
@@ -3273,7 +3552,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             else:
                 # 上一区有写不进的 -> 加长等待，比事后重试划算
                 wait = min(70, int(wait * 1.5))
-            job.wait_until = job.tick + wait
+            job.wait_until = job.tick + max(1, wait)
+            # 区块就绪就提前开工：固定等待只是上限，不是必须等满
+            job.ready_probe = not big
             job.tp_wait = 0
             if big and len(job.sections) > 1:
                 # 只有"跨行远传"这种异常减速值得留一句提示，其余全靠 tip
@@ -3677,6 +3958,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         u"freeze": "freeze",
         u"maparea": "map_area",
         u"ta": "ta_mode",
+        u"verify": "verify",
     }
 
     def _apply_opt(self, key, delta):
@@ -3686,6 +3968,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.parallel = max(3, cfg.PARALLEL_DEFAULT)
             self.turbo = True
             self.budget = cfg.WRITE_BUDGET_MS_TURBO
+            self.map_speed = 2
+            if not self.split_size:
+                self.split_size = int(cfg.SPLIT_SIZE_MAX)
             self._save()
             return
         if key == u"nbtlimit":
@@ -3731,6 +4016,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         """设置页要显示的一堆数值（每一行一个）"""
         return {
             "splitz": int(getattr(self, "split_size", 0) or 0),
+            "verify": 1 if self.verify else 0,
             "ta": 1 if self.ta_mode else 0,
             "freeze": 1 if self.freeze else 0,
             "maparea": 1 if self.map_area else 0,
