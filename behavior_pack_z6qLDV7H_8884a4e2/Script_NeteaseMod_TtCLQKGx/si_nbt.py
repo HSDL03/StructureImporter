@@ -39,6 +39,33 @@ _F8 = struct.Struct("<q")
 _D4 = struct.Struct("<f")
 _D8 = struct.Struct("<d")
 
+# 标量类型 -> struct 格式；标量 list 可以一次性 unpack 整段，不必逐个读
+_LIST_FMT = {
+    TAG_BYTE: "b", TAG_SHORT: "h", TAG_INT: "i", TAG_LONG: "q",
+    TAG_FLOAT: "f", TAG_DOUBLE: "d",
+}
+_LIST_SIZE = {
+    TAG_BYTE: 1, TAG_SHORT: 2, TAG_INT: 4, TAG_LONG: 8,
+    TAG_FLOAT: 4, TAG_DOUBLE: 8,
+}
+
+
+class _ScalarList(list):
+    """元素全是标量的 NBT list，直接存裸值（记住元素类型，写引擎时还要用）
+
+    block_indices 就是 600 多万个 int（尺寸 190×148×239 的结构 = 672 万）。
+    按规范的 (类型码, 值) 二元组来存，光 tuple 就要多占几百 MB，
+    解析还得多做一千三百万次函数调用 —— 实测象牙城堡解析 6.5 秒里
+    5.6 秒花在这上面。标量 list 的元素类型由 list 头部的 tag 决定，
+    没有歧义，所以这里只留裸值：plain() 直接用，to_engine() 按 et 补包装。
+    """
+    __slots__ = ("et",)
+
+    def __init__(self, et, vals):
+        list.__init__(self, vals)
+        self.et = et
+
+
 
 class Reader(object):
     __slots__ = ("s", "i", "n")
@@ -115,8 +142,15 @@ def _payload(r, t):
     if t == TAG_LIST:
         et = r.u1()
         n = r.i4()
-        if et == TAG_END:
+        if et == TAG_END or n <= 0:
             return []
+        fmt = _LIST_FMT.get(et)
+        if fmt is not None:
+            size = _LIST_SIZE[et] * n
+            if r.i + size <= r.n:
+                out = list(struct.unpack_from("<%d%s" % (n, fmt), r.s, r.i))
+                r.i += size
+                return out
         return [_payload(r, et) for _ in range(n)]
     if t == TAG_COMPOUND:
         out = {}
@@ -180,8 +214,15 @@ def _payload_t(r, t):
     if t == TAG_LIST:
         et = r.u1()
         n = r.i4()
-        if et == TAG_END:
+        if et == TAG_END or n <= 0:
             return (t, [])
+        fmt = _LIST_FMT.get(et)
+        if fmt is not None:
+            size = _LIST_SIZE[et] * n
+            if r.i + size <= r.n:
+                vals = list(struct.unpack_from("<%d%s" % (n, fmt), r.s, r.i))
+                r.i += size
+                return (t, _ScalarList(et, vals))
         return (t, [_payload_t(r, et) for _ in range(n)])
     if t == TAG_COMPOUND:
         out = {}
@@ -226,6 +267,8 @@ def plain(node):
     if t == TAG_COMPOUND:
         return dict((k, plain(c)) for k, c in v.items())
     if t == TAG_LIST:
+        if isinstance(v, _ScalarList):
+            return v              # 已经是裸值列表，下游只读，不再复制一份
         return [plain(c) for c in v]
     return v
 
@@ -248,6 +291,10 @@ def to_engine(node):
     if t == TAG_COMPOUND:
         return dict((k, to_engine(c)) for k, c in v.items())
     if t == TAG_LIST:
+        if isinstance(v, _ScalarList):
+            # 标量 list 内部存的是裸值，这里按原来的样子补回叶子包装
+            et = v.et
+            return [{"__type__": et, "__value__": x} for x in v]
         return [to_engine(c) for c in v]
     if t == TAG_BYTE_ARR:
         n = len(v)

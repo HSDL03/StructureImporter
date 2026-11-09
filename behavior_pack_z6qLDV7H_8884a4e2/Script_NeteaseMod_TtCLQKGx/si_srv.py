@@ -3655,13 +3655,39 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.phase = "done"
 
     def _sec_box(self, job, sec):
-        """分区的绝对包围盒 (x1,y1,z1,x2,y2,z2)"""
+        """分区的绝对包围盒 (x1,y1,z1,x2,y2,z2)
+
+        单循环求 min/max：原来分别推导三个列表再各 min/max 一次，
+        一个 1.9 万块的区要凭空造 5.7 万个元素的三份列表，
+        每换一区就白扔十几毫秒（在换区那一帧里，正好卡在主线程上）。
+        """
         bx, by, bz = job.base
-        xs = [job.blocks[i][0] for i in sec["blocks"]]
-        ys = [job.blocks[i][1] for i in sec["blocks"]]
-        zs = [job.blocks[i][2] for i in sec["blocks"]]
-        return (bx + min(xs), by + min(ys), bz + min(zs),
-                bx + max(xs), by + max(ys), bz + max(zs))
+        idx = sec["blocks"]
+        if not idx:
+            return (bx, by, bz, bx, by, bz)
+        blocks = job.blocks
+        p = blocks[idx[0]]
+        x1 = x2 = p[0]
+        y1 = y2 = p[1]
+        z1 = z2 = p[2]
+        for k in idx:
+            p = blocks[k]
+            x = p[0]
+            if x < x1:
+                x1 = x
+            elif x > x2:
+                x2 = x
+            y = p[1]
+            if y < y1:
+                y1 = y
+            elif y > y2:
+                y2 = y
+            z = p[2]
+            if z < z1:
+                z1 = z
+            elif z > z2:
+                z2 = z
+        return (bx + x1, by + y1, bz + z1, bx + x2, by + y2, bz + z2)
 
     def _sec_center(self, job, sec):
         x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
@@ -3808,14 +3834,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             return
         if sec is None or not sec["blocks"]:
             return
-        bx, by, bz = job.base
-        xs = [job.blocks[i][0] for i in sec["blocks"]]
-        ys = [job.blocks[i][1] for i in sec["blocks"]]
-        zs = [job.blocks[i][2] for i in sec["blocks"]]
-        name = u"si_%d_%d" % (job.sec_i, len(xs))
+        x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
+        name = u"si_%d_%d" % (job.sec_i, len(sec["blocks"]))
         cmd = u"/tickingarea add %d %d %d %d %d %d %s" % (
-            bx + min(xs), by + min(ys), bz + min(zs),
-            bx + max(xs), by + max(ys), bz + max(zs), name)
+            x1, y1, z1, x2, y2, z2, name)
         cmdComp = self._command()
         ok = False
         if cmdComp:
@@ -3847,13 +3869,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         sec = self._section(job)
         if sec is None or not sec["blocks"] or not job.pid:
             return 0
-        bx, by, bz = job.base
-        xs = [job.blocks[i][0] for i in sec["blocks"]]
-        ys = [job.blocks[i][1] for i in sec["blocks"]]
-        zs = [job.blocks[i][2] for i in sec["blocks"]]
-        cx = bx + (min(xs) + max(xs)) / 2.0
-        cz = bz + (min(zs) + max(zs)) / 2.0
-        cy = by + max(ys) + 6.0        # 站到分块上方面空处，别埋进方块里
+        x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
+        cx = (x1 + x2) / 2.0
+        cz = (z1 + z2) / 2.0
+        cy = y2 + 6.0                  # 站到分块上方面空处，别埋进方块里
         try:
             p = self.factory.CreatePos(job.pid).GetFootPos()
             dist = max(abs(p[0] - cx), abs(p[2] - cz))
