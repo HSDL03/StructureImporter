@@ -1700,9 +1700,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._freeze_off()         # 先把上一次可能残留的规则还原，再按
             self._freeze_on()          # 尽量把随机刻/昼夜/天气按住，结束恢复
         # 坐标 -> 原本该放什么方块（写实体后拿它核对/还原）。
-        # blocks 这时还是五元组（aux 还没翻），这张表等 prep 扫完再建，见 _prep_finish。
+        # 只关心"有方块实体的那几十个坐标"，所以不建整张结构的表（一百多万块
+        # 建一次表就是一秒的主线程卡顿）：把实体坐标做成集合，prep 扫块时顺路
+        # 命中就记下来，见 _step_prep 阶段 0。
         self.job.blk_at = {}
         self.job.need_blk_at = bool(ents)
+        if ents:
+            self.job.ent_pos = set([(e[0], e[1], e[2]) for e in ents])
+        else:
+            self.job.ent_pos = None
         # 聊天框只报"开始/结束"这种低频消息，过程全交给下方 tip 小栏
         self.tell(pid, u"§a开始放置 §f%s §7· %d×%d×%d · %d 方块 · 旋转 %d" %
                   (util.short(entry.rel, 36), size[0], size[1], size[2],
@@ -2815,7 +2821,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 st["n0"] = n
                 st["w"] = 0
                 st["skipn"] = 0
+                st["blk_at"] = {}
             names = st["names"]
+            ent_pos = getattr(job, "ent_pos", None)
+            bat = st["blk_at"]
             cache = st.get("aux_cache")
             if cache is None:
                 cache = st["aux_cache"] = {}
@@ -2855,6 +2864,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     aux = 0
                 blocks[w] = (x, y, z, name, aux, states)
                 w += 1
+                if ent_pos is not None:
+                    # 有方块实体时顺路记下"这个坐标原本是什么方块"，
+                    # 写实体后要拿它核对/还原；只记命中的那几十个坐标
+                    pos3 = (x, y, z)
+                    if pos3 in ent_pos:
+                        bat[pos3] = (name, aux, states)
                 k = (x // 16, z // 16)
                 hist[k] = hist.get(k, 0) + 1
                 names.add(name)
@@ -2948,12 +2963,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
     def _prep_finish(self, job):
         """扫描完成后把分区定下来（这一步只剩排序，几十毫秒内）"""
         st = job.prep
-        if getattr(job, "need_blk_at", False) and not job.blk_at:
-            # 写实体后要按坐标核对/还原方块，这里才建表（blocks 已是六元组）
-            table = {}
-            for b in job.blocks:
-                table[(b[0], b[1], b[2])] = (b[3], b[4], b[5])
-            job.blk_at = table
+        # 有方块实体时，prep 扫块那遍已经顺路把命中坐标记下来了（st["blk_at"]）
+        job.blk_at = st.get("blk_at") or {}
         if self._skipped:
             self.note(u"跳过运行时方块 %d" % self._skipped)
         blocks = job.blocks
