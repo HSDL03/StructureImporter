@@ -285,6 +285,7 @@ HELP = [
     u"§f/structureim verify <开|关> §7导完逐块回读校验，缺的补写（默认开）",
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
+    u"§f/structureim tac §7清理本插件残留的常加载区（只删 si_ 开头，不动指令区）",
     u"§f/structureim turbo <开|关> §7急速模式（等区块 3 tick，大结构提速主力）",
     u"§f/structureim threads <1-8> §7解析方式（1=主线程分帧，>=2=后台线程，两者都不卡）",
     u"§f/structureim parallel <1-4> §7相邻分区并行（提前加载邻区，默认1=关）",
@@ -378,6 +379,7 @@ class Job(object):
         self.wait_until = 0
         self.tp_wait = 0          # 本分区刚 TP 过 -> 强制等区块加载
         self.areas = []          # 已创建的 /tickingarea 名字，收尾时逐个移除
+        self.ta_ok = False       # 本任务真的挂上常加载了才不跟随 TP
         # 暂停 / 速度统计
         self.paused = False
         self.work_ticks = 0      # 实际干活的 tick 数（暂停和等区块不算），算速度用
@@ -957,6 +959,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_fast(pid, a1)
         elif action in (u"ta", u"tacover"):
             self.cmd_ta(pid, a1)
+        elif action in (u"tac", u"taclean", u"清理常加载"):
+            self.cmd_tac(pid, a1)
         elif action == u"znum":
             self.cmd_znum(pid, a1)
         elif action in (u"manual", u"help2", u"书"):
@@ -1259,6 +1263,33 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§a纯常加载模式：§f%s §7（%s）" %
                   (u"开" if v else u"关",
                    u"人不跟着跑，整张结构常加载" if v else u"恢复跟随 TP"))
+
+    def cmd_tac(self, pid, text):
+        """清理本插件残留的常加载区（崩服/中途退出留下的那些）
+
+        **只按 si_ 前缀删自己的**，绝不用 /tickingarea remove_all：
+        服务器里通常已经有别人的指令区、出生点常加载，一条都不能动。
+        """
+        cmd = self._command()
+        if cmd is None:
+            self.tell(pid, u"§c拿不到命令组件，清理失败")
+            return
+        prefix = cfg.AREA_PREFIX
+        names = []
+        for i in _range(max(1, int(cfg.TA_MAX_AREAS))):
+            names.append(u"%sta_%d" % (prefix, i))
+        for i in _range(64):
+            names.append(u"%spf_%d" % (prefix, i))
+            names.append(u"%smap_%d" % (prefix, i))
+        n = 0
+        for nm in names:
+            try:
+                if cmd.SetCommand(util.b(u"/tickingarea remove %s" % nm)):
+                    n += 1
+            except Exception:
+                pass
+        self.tell(pid, u"§a已清理本插件残留常加载 §f%d §7个"
+                       u"（只删 %s 开头的，别人的指令区没动）" % (n, prefix))
 
     def cmd_turbo(self, pid, text):
         """急速模式：分区等待压到最短、写入预算拉满（大结构提速的主要手段）"""
@@ -3751,11 +3782,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 added += 1
 
     def _drop_pf(self, job, keep_from):
-        """释放已经走过的预取区块（常加载空位有限，别一直占着）"""
+        """释放已经走过的预取区块（常加载空位有限，别一直占着）
+
+        只删自己挂的（si_ 前缀），绝不碰服务器里别人的指令区。
+        """
+        prefix = cfg.AREA_PREFIX
         keep = []
+        cmdComp = None
         for idx, name in job.pf:
             if idx < keep_from:
-                cmdComp = self._command()
+                if not name or not name.startswith(prefix):
+                    continue
+                if cmdComp is None:
+                    cmdComp = self._command()
                 if cmdComp:
                     try:
                         cmdComp.SetCommand(util.b(u"/tickingarea remove %s" % name))
@@ -3798,7 +3837,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             # 急速模式只等 0.3 秒（给 TP 包处理时间），其余写不进的靠分区末尾
             # 自动重试兜底——这才是急速的本意，不能让强制等待把它盖掉
             job.waiting = True
-            if self.ta_mode:
+            if self.ta_mode and job.ta_ok:
                 # 纯常加载：首区等常加载真正把区块拉起来，之后各区只留小间隔。
                 # 同样带就绪探测：区块一好就开工，不等满
                 wait = cfg.TA_FIRST_WAIT if job.sec_i == 0 else cfg.TA_WAIT
@@ -3874,8 +3913,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         那边区块没加载，SetBlockNew 会静默失败（就是"开始区域小块导入失败"）。
         分区中心离玩家超过 TP_MIN_DIST 就把玩家 TP 过去，区块随即加载。
         纯常加载模式下整个结构已经挂了 tickingarea，直接跳过 TP。
+        没挂上（名额不够 / 命令组件缺失）时 ta_ok 是 False，照常跟传——
+        否则整个导入会在没加载的区块上写成一片空气。
         """
-        if self.ta_mode:
+        if self.ta_mode and job.ta_ok:
             return 0
         sec = self._section(job)
         if sec is None or not sec["blocks"] or not job.pid:
@@ -3900,44 +3941,128 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         return 0
 
     def _ta_cover(self, job):
-        """纯常加载模式：给整张结构挂一个 tickingarea，玩家不再跟着分区跑
+        """纯常加载模式：给结构挂 tickingarea，玩家不再跟着分区跑
 
-        常加载挂好以后第一个分区等 TA_FIRST_WAIT 让区块真正加载，
-        之后每个分区只隔 TA_WAIT；写失败仍有分区末尾的自动重试兜底。
-        名字记进 job.areas，收尾/中止时由 _drop_area 统一摘除。
+        三条硬规矩（服务器里一般已经有别人的指令区，不能乱来）：
+          1. 只按自己的名字（si_ 前缀）挂、按自己的名字删，**永远不用
+             /tickingarea remove_all** —— 那会把出生点常加载、指令区一起清掉；
+          2. 单个方形常加载有尺寸上限（超过百格引擎拒收），所以按 TA_MAX_SIDE
+             切成几块挂，而不是硬塞一个巨区；
+          3. 名额不够（世界默认 10 个，本插件最多占 TA_MAX_AREAS 个）就退回
+             跟随 TP，并说清楚原因，不抢别人的名额。
+
+        名字记进 job.areas，收尾/中止时由 _drop_area 逐个摘除。
         """
         blocks = job.blocks
         if not blocks:
             return
         bx, by, bz = job.base
-        pad = 16
-        x0 = bx + min(b[0] for b in blocks) - pad
-        x2 = bx + max(b[0] for b in blocks) + pad
-        y0 = by + min(b[1] for b in blocks) - pad
-        y2 = by + max(b[1] for b in blocks) + pad
-        z0 = bz + min(b[2] for b in blocks) - pad
-        z2 = bz + max(b[2] for b in blocks) + pad
+        # 单循环求包围盒：一百多万块的结构别扫三遍（每遍都是在主线程上）
+        b = blocks[0]
+        x1 = x2 = b[0]
+        y1 = y2 = b[1]
+        z1 = z2 = b[2]
+        for k in _range(len(blocks)):
+            b = blocks[k]
+            x = b[0]
+            if x < x1:
+                x1 = x
+            elif x > x2:
+                x2 = x
+            y = b[1]
+            if y < y1:
+                y1 = y
+            elif y > y2:
+                y2 = y
+            z = b[2]
+            if z < z1:
+                z1 = z
+            elif z > z2:
+                z2 = z
+        # 不加 pad：方块都在结构范围内，多圈一格就多块一整区，
+        # 名额是别人也在用的稀缺资源（190×239 的结构，省掉 pad 从 9 个降到 6 个）
+        x1 = bx + x1
+        x2 = bx + x2
+        y1 = by + y1
+        y2 = by + y2
+        z1 = bz + z1
+        z2 = bz + z2
+
+        # 按区块列切：边长上限换算成"每区跨几个 16 格区块"，边界对齐到区块，
+        # 这样既不会超出引擎的单区上限，也不会因为零头多占一个名额
+        per = max(1, int(cfg.TA_MAX_SIDE) // 16)
+        cx0 = x1 >> 4
+        cx1 = x2 >> 4
+        cz0 = z1 >> 4
+        cz1 = z2 >> 4
+        nx = (cx1 - cx0) // per + 1
+        nz = (cz1 - cz0) // per + 1
+        need = nx * nz
+        cap = max(1, int(cfg.TA_MAX_AREAS))
+        if need > cap:
+            self.tell(job.pid, u"§e纯常加载：结构 %dx%d 格需要 %d 个常加载区，"
+                               u"超过本插件上限 %d §7本次退回跟随 TP"
+                      % (x2 - x1 + 1, z2 - z1 + 1, need, cap))
+            return
         cmd = self._command()
-        name = u"si_ta_all"
-        ok = False
-        if cmd:
-            try:
-                ok = bool(cmd.SetCommand(util.b(
-                    u"/tickingarea add %d %d %d %d %d %d %s" %
-                    (int(x0), int(y0), int(z0), int(x2), int(y2), int(z2), name))))
-            except Exception:
+        if cmd is None:
+            self.tell(job.pid, u"§c拿不到命令组件，纯常加载用不了 §7本次退回跟随 TP")
+            return
+
+        done = 0
+        fail = 0
+        for ix in _range(nx):
+            acx0 = cx0 + ix * per
+            acx1 = min(cx1, acx0 + per - 1)
+            ax1 = acx0 * 16
+            ax2 = acx1 * 16 + 15
+            for iz in _range(nz):
+                acz0 = cz0 + iz * per
+                acz1 = min(cz1, acz0 + per - 1)
+                az1 = acz0 * 16
+                az2 = acz1 * 16 + 15
+                name = u"%sta_%d" % (cfg.AREA_PREFIX, ix * nz + iz)
                 ok = False
-        if ok:
-            job.areas.append(name)
-            job.tp_wait = 1            # 首区走一次等待分支，给区块加载时间
-            self.tell(job.pid, u"§a纯常加载：§f整张结构已挂 tickingarea §7（%d×%d×%d，玩家不跟随传送）" %
-                      (int(x2 - x0 + 1), int(y2 - y0 + 1), int(z2 - z0 + 1)))
+                try:
+                    ok = bool(cmd.SetCommand(util.b(
+                        u"/tickingarea add %d %d %d %d %d %d %s" %
+                        (int(ax1), int(y1), int(az1),
+                         int(ax2), int(y2), int(az2), name))))
+                except Exception:
+                    ok = False
+                if ok:
+                    job.areas.append(name)
+                    done += 1
+                else:
+                    fail += 1
+        if not done:
+            self.tell(job.pid, u"§c常加载一个都没挂上（世界已有 10 个区域？）"
+                               u"§7本次退回跟随 TP")
+            return
+        job.tp_wait = 1              # 首区走一次等待分支，给区块加载时间
+        job.ta_ok = True             # 挂上了才允许"不跟随 TP"
+        if fail:
+            self.tell(job.pid, u"§e纯常加载：§f%d 个区挂上、%d 个失败 "
+                               u"§7失败部分靠分区重试兜底，建议改用跟随 TP"
+                      % (done, fail))
         else:
-            self.tell(job.pid, u"§c常加载挂不上（世界已有 10 个区域？）§7本次退回跟随 TP")
+            self.tell(job.pid, u"§a纯常加载：§f结构已挂 %d 个 tickingarea §7"
+                               u"（%d×%d×%d，玩家不跟随传送）"
+                      % (done, int(x2 - x1 + 1), int(y2 - y1 + 1),
+                         int(z2 - z1 + 1)))
 
     def _drop_area(self, job):
+        """摘掉本任务挂的常加载
+
+        只删自己记录过的名字，并且名字必须带 si_ 前缀才动手 ——
+        服务器里的指令区/出生点常加载不属于我们，一条都不能碰。
+        （历史版本没有用过 remove_all，以后也不许用。）
+        """
+        prefix = cfg.AREA_PREFIX
         while job.areas:
             name = job.areas.pop()
+            if not name or not name.startswith(prefix):
+                continue
             cmdComp = self._command()
             if cmdComp:
                 try:

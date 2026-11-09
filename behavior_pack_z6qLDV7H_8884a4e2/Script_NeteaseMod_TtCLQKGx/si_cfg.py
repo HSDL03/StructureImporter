@@ -27,7 +27,7 @@ CMD_NAME = "structureim"
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
 CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "splitz", "verify", "preset", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
-               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast", "ta",
+               "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast", "ta", "tac",
                "manual", "help2"]
 
 # ---------------------------------------------------------------- 存档
@@ -61,6 +61,15 @@ SPEED_MAX = 10
 TA_MODE_DEFAULT = False
 TA_FIRST_WAIT = 60        # 常加载挂好后，第一个分区开写前等多少 tick（3 秒）
 TA_WAIT = 6               # 之后每个分区之间的间隔 tick（0.3 秒）
+
+# 常加载挂载的尺寸与名额约束。
+# 服务器/存档里通常已经有别人的指令区（出生点常加载、公会用区……），
+# 所以：① 绝不用 /tickingarea remove_all，只按自己的名字删；
+#       ② 结构超过单个区上限就切成几块，但占用名额留出余量；
+#       ③ 名额不够就老老实实退回跟随 TP，不去抢别人的。
+TA_MAX_SIDE = 96          # 单个方形常加载的边长上限（引擎对超过百格的区会拒收）
+TA_MAX_AREAS = 9          # 本插件最多占几个名额（世界默认 10 个，留 1 个给别人）
+AREA_PREFIX = "si_"       # 本插件挂的常加载统一前缀，清理只认这个
 
 # ---------------------------------------------------------------- 扫描
 MAX_DEPTH = 10            # 目录递归深度
