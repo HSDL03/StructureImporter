@@ -921,5 +921,29 @@
         "default_control": "default",
         "hover_control": "hover",
         "pressed_control": "pressed"
+    },
+    "si_spr_sw_off": {
+        "type": "image",
+        "texture": "textures/ui/si_sw_off",
+        "nineslice_size": 10,
+        "size": [
+            "100%",
+            "100%"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "layer": 1
+    },
+    "si_spr_sw_on": {
+        "type": "image",
+        "texture": "textures/ui/si_sw_on",
+        "nineslice_size": 10,
+        "size": [
+            "100%",
+            "100%"
+        ],
+        "anchor_from": "center",
+        "anchor_to": "center",
+        "layer": 1
     }
 }

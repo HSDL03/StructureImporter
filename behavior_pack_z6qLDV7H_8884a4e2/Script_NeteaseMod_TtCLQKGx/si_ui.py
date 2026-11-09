@@ -311,16 +311,23 @@ class SiSettingScreen(ScreenNode):
         self.sys = (param or {}).get("client")
         self._born = None
         self._vals = {}
+        self._sw = {}          # 每个真/假项的当前状态（拨片贴图据此切换）
 
     def Create(self):
         self._born = time.time()
         if self.sys is not None:
             self.sys.set_screen = self
         for i, row in enumerate(SET_ROWS):
-            self._touch("si_r%d_minus" % i, self._on_step(row[0], -1))
-            self._touch("si_r%d_plus" % i, self._on_step(row[0], 1))
+            if row[2] == "bool":
+                # 只有真/假的项：整块拨片可点，点一下翻转（delta=0 = 取反）
+                self._touch("si_r%d_sw" % i, self._on_step(row[0], 0))
+            else:
+                self._touch("si_r%d_minus" % i, self._on_step(row[0], -1))
+                self._touch("si_r%d_plus" % i, self._on_step(row[0], 1))
             self._label(self.ROOT + "/si_r%d_name" % i, row[1])
-        self._touch("si_fast_btn", self._on_fast)
+        self._touch("si_pre_safe", self._on_preset("safe"))
+        self._touch("si_pre_balance", self._on_preset("balance"))
+        self._touch("si_pre_turbo", self._on_preset("turbo"))
         self._touch("si_set_close", self._on_close)
         for i, row in enumerate(SET_ROWS):
             self._render_row(i, 0)
@@ -360,7 +367,22 @@ class SiSettingScreen(ScreenNode):
     def _render_row(self, i, value):
         row = SET_ROWS[i]
         self._vals[row[0]] = value
+        if row[2] == "bool":
+            self._render_switch(i, bool(int(value or 0)))
+            return
         self._label(self.ROOT + "/si_r%d_val" % i, _opt_text(row[2], value))
+
+    def _render_switch(self, i, on):
+        """把拨片切到开/关：只换贴图，不重建控件（重建会闪一下）"""
+        self._sw[SET_ROWS[i][0]] = on
+        tex = "textures/ui/si_sw_on" if on else "textures/ui/si_sw_off"
+        for child in ("default", "hover", "pressed"):
+            path = "%s/si_r%d_sw/%s" % (self.ROOT, i, child)
+            try:
+                self.GetBaseUIControl(path).asImage().SetSprite(tex)
+            except Exception:
+                # 校验环境没有 asImage / 子控件名不同：状态照记，不影响逻辑
+                pass
 
     # ---- 数据
     def apply(self, data):
@@ -388,9 +410,16 @@ class SiSettingScreen(ScreenNode):
                 self.sys.set_opt(key, delta)
         return cb
 
-    def _on_fast(self, args):
-        if self.sys is not None:
-            self.sys.run_fast()
+    def _on_preset(self, name):
+        def cb(args):
+            if self.sys is not None:
+                run = getattr(self.sys, "run_preset", None)
+                if run is not None:
+                    run(name)
+                else:
+                    self.sys.send_settings({"opt": "preset", "delta": 0,
+                                            "value": name})
+        return cb
 
     def _on_close(self, args):
         # 创建瞬间的伪触摸同样挡掉，避免设置页一开就关

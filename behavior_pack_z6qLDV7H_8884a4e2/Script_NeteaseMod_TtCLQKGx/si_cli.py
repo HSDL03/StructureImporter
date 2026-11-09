@@ -97,6 +97,11 @@ class SiClientSystem(clientApi.GetClientSystemCls()):
     def run_fast(self):
         self.send_settings({"opt": "fast", "delta": 0})
 
+    def run_preset(self, name):
+        """套用预设：safe / balance / turbo（服务端一把改完并落盘）"""
+        self.send_settings({"opt": "preset", "delta": 0,
+                            "value": util.u(name)})
+
     def send_settings(self, payload):
         try:
             data = {"pid": self.pid()}

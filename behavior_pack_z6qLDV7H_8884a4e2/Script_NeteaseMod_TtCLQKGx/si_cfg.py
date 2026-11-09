@@ -25,7 +25,7 @@ SET_CLS = PKG + ".si_ui.SiSettingScreen"
 CMD_NAME = "structureim"
 # 指令 json 的参数项只认 name / type / default / options 四个键，
 # 写 enum / values 会被引擎丢弃（日志：child 'enum' not valid here）
-CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "splitz", "verify", "map",
+CMD_ACTIONS = ["ui", "dir", "scan", "list", "place", "stop", "pause", "info", "selftest", "test", "split", "splitz", "verify", "preset", "map",
                "zwait", "znum", "zsec", "bigwait", "budget", "threads", "parallel",
                "nbtlimit", "freeze", "freezetime", "mapspeed", "maparea", "turbo", "fast", "ta",
                "manual", "help2"]
@@ -122,6 +122,22 @@ TP_LOAD_WAIT = 40         # 跟随 TP 后强制等多少 tick（2 秒）给区�
 # 这是"一块都不漏"的兜底——引擎在区块没完全加载、液体流动、支撑判断时
 # 都可能悄悄丢掉某一块，写入返回成功并不代表真的写上了。
 VERIFY_DEFAULT = True
+
+# ---------------------------------------------------------------- 预设
+# 三个一键组合：不用逐行调。键名与设置页的 opt 一致（turbo/budget/threads/
+# parallel/verify/mapspeed/splitz），套用时一次改完并落盘。
+PRESETS = {
+    # 稳：只求不漏块、不卡，速度放最后（慢一点但最保险）
+    "safe": {"turbo": 0, "budget": 10, "threads": 1, "parallel": 1,
+             "verify": 1, "mapspeed": 0, "splitz": 0},
+    # 均衡：默认推荐，写入提速但等待仍按就绪探测走
+    "balance": {"turbo": 1, "budget": 14, "threads": 1, "parallel": 2,
+                "verify": 1, "mapspeed": 1, "splitz": 0},
+    # 极速：640×640 地图画 120 秒的目标档（地图极速 + 分区 128 + 满预算）
+    "turbo": {"turbo": 1, "budget": 20, "threads": 2, "parallel": 3,
+              "verify": 1, "mapspeed": 2, "splitz": 128},
+}
+PRESET_LABELS = {"safe": u"稳", "balance": u"均衡", "turbo": u"极速"}
 TP_LOAD_WAIT_TURBO = 6    # 急速模式：TP 后只等 0.3 秒，剩余交给写失败自动重试
 TP_BIG_JUMP = 128         # 跟随 TP 一步跳多远算"跨行远传"（竖排导入换行最典型）
 TP_BIG_WAIT = 80          # 跨行远传后强制等多少 tick（4 秒）让区块追上，再恢复原速

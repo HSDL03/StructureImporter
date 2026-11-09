@@ -229,6 +229,7 @@ HELP = [
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
+    u"§f/structureim preset <稳|均衡|极速> §7一键套用整套参数（128图120秒选极速）",
     u"§f/structureim verify <开|关> §7导完逐块回读校验，缺的补写（默认开）",
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
@@ -894,6 +895,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
+        elif action in (u"preset", u"pre", u"tier"):
+            self.cmd_preset(pid, a1)
         elif action in (u"verify", u"check"):
             self.cmd_verify(pid, a1)
         elif action in (u"splitz", u"sidesz", u"side"):
@@ -955,6 +958,39 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§6第 %d/%d 页" % (page, pages))
         for i in range(start, min(start + cfg.ROWS, len(lib.entries))):
             self.tell(pid, u"§7%d. §f%s" % (i + 1, util.short(lib.entries[i].rel, 40)))
+
+    def cmd_preset(self, pid, text):
+        """一键预设：稳 / 均衡 / 极速（一次改完一整组参数并落盘）"""
+        raw = (text or u"").strip().lower()
+        alias = {u"稳": "safe", u"安全": "safe", u"safe": "safe", u"1": "safe",
+                 u"均衡": "balance", u"平衡": "balance", u"balance": "balance",
+                 u"2": "balance",
+                 u"极速": "turbo", u"快": "turbo", u"turbo": "turbo",
+                 u"3": "turbo"}
+        name = alias.get(raw, raw)
+        pack = cfg.PRESETS.get(name)
+        if not pack:
+            cur = u" / ".join(u"%s=%s" % (k, cfg.PRESET_LABELS.get(k, k))
+                              for k in ("safe", "balance", "turbo"))
+            self.tell(pid, u"§e用法：/structureim preset <稳|均衡|极速> §7（%s）" % cur)
+            return
+        self.turbo = bool(pack["turbo"])
+        self.budget = float(pack["budget"])
+        self.threads = max(1, int(pack["threads"]))
+        self.parallel = max(1, int(pack["parallel"]))
+        self.verify = bool(pack["verify"])
+        self.map_speed = max(0, min(2, int(pack["mapspeed"])))
+        self.split_size = max(0, min(int(cfg.SPLIT_SIZE_MAX), int(pack["splitz"])))
+        self._save()
+        self.tell(pid, u"§a已套用预设：§f%s §7（急速 %s · 预算 %d ms · 线程 %d · 并行 %d · "
+                       u"地图 %s · 分区 %s · 回读校验 %s）" %
+                  (cfg.PRESET_LABELS.get(name, name),
+                   u"开" if self.turbo else u"关", int(self.budget), self.threads,
+                   self.parallel,
+                   [u"稳", u"快", u"极速"][self.map_speed],
+                   u"自动" if not self.split_size else u"%d 格" % self.split_size,
+                   u"开" if self.verify else u"关"))
+        self.push(pid, self._page)
 
     def cmd_verify(self, pid, text):
         """收尾逐块回读校验：写完再读一遍，缺哪块补哪块（默认开）"""
@@ -3912,7 +3948,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     delta = int(util.u(args.get("delta")) or 0)
                 except (TypeError, ValueError):
                     delta = 0
-                self._apply_opt(util.u(args.get("opt")), delta)
+                self._apply_opt(util.u(args.get("opt")), delta,
+                                util.u(args.get("value") or u""))
             root = util.norm_path(args.get("root") or u"")
             if root and root != self.library.root:
                 if util.is_dir(root):
@@ -3961,7 +3998,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         u"verify": "verify",
     }
 
-    def _apply_opt(self, key, delta):
+    def _apply_opt(self, key, delta, value=u""):
+        if key == u"preset":
+            # 一键预设：safe / balance / turbo，也可传中文
+            self.cmd_preset(None, value or u"balance")
+            return
         if key == u"fast":
             # 一键提速：和 /structureim fast 完全一样
             self.threads = max(2, cfg.THREADS_DEFAULT)
