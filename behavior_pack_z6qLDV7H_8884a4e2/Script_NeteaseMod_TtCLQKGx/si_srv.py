@@ -238,32 +238,90 @@ def _item_dict(entry):
             tag = _slim_item_tag(tag)
             trim = True
         if tag:
-            ench = _item_enchants(tag)
             p = dict(base)
             t = dict(base)
+            # typed 版本 = 结构里的 NBT 原样（只做 str 化和 compound 展平）。
+            # 这是引擎自己的存档形态，保真度最高：盒中盒、多层嵌套、32767 级附魔、
+            # 自定义名字全都原样落在容器里。
+            t["userData"] = _nbt_for_engine(_norm_ench(tag))
+            # plain 版本（纯 python 值）留作兜底，某些版本只认这种
             p_tag = _typed_to_plain(tag)
-            # 附魔走顶层 enchantData：这是引擎唯一认得稳的形态。
-            # userData 里留 ench（普通 int）会被引擎存成 TAG_Int，回读变成 (0, 0)；
-            # 只有 {__type__:2} 包装才对，而 enchantData 两条路都能照顾到。
             if isinstance(p_tag, dict):
-                for k in ("ench", "Enchantments"):
-                    p_tag.pop(k, None)
-            if ench:
-                p["enchantData"] = ench
-                t["enchantData"] = ench
-            if p_tag:
                 p["userData"] = _native_deep(p_tag)
-            # typed 版本保留原始 __type__ 结构，只把 unicode 转成 str
-            t["userData"] = _native_deep(tag)
-            if "enchantData" in p:
-                # 别让引擎按 userData 里的 old 形态再覆盖一次
-                t["userData"] = _native_deep(
-                    dict((k, v) for k, v in tag.items()
-                         if k not in ("ench", "Enchantments")))
+                ench = _item_enchants(tag)
+                if ench:
+                    p["enchantData"] = ench
             plain, typed = p, t
     if plain is None:
         plain = dict(base)
     return {"plain": plain, "typed": typed, "slot": slot, "trim": trim}
+
+
+def _nbt_for_engine(node):
+    """把结构里的 NBT 树整理成引擎 userData 能原样保存的形态
+
+    真机实测的三条规矩（都是"整条被丢"这种静默失败，不问就查不出来）：
+      1. 字符串必须是 str（UTF-8 字节串）；unicode 会让整个 userData 变 None
+      2. compound(type 10) / list(type 9) 不能再套 {'__type__','__value__'} ——
+         引擎只认叶子包装，套了就整份 userData 被丢
+      3. 叶子保持原有的 __type__ 包装（short/int/long 各有含义，不能统一成 int）
+    """
+    if isinstance(node, dict):
+        if "__type__" in node and "__value__" in node:
+            try:
+                t = int(node["__type__"])
+            except (TypeError, ValueError):
+                t = None
+            if t in (9, 10):                 # list / compound：引擎要裸结构
+                return _nbt_for_engine(node["__value__"])
+            if t is not None:
+                return {"__type__": t, "__value__": _nbt_for_engine(node["__value__"])}
+        out = {}
+        for k, v in node.items():
+            out[_native(k) if isinstance(k, _STR) else k] = _nbt_for_engine(v)
+        return out
+    if isinstance(node, list):
+        return [_nbt_for_engine(v) for v in node]
+    if isinstance(node, _STR):
+        return _native(node)
+    return node
+
+
+def _norm_ench(tag):
+    """把附魔统一成 engines 唯一认得的形态：[{'id': short, 'lvl': short}]
+
+    实测（真机，钻石头盔写进潜影盒）：
+      - userData.ench 用 {'__type__': 2} 包装 -> 成功，32767 级也照样写进去
+      - userData.ench 用普通 int             -> 存成 TAG_Int，回读变成 (0, 0)
+      - 顶层 enchantData                     -> 同一件物品直接 spawn item failed!
+    所以这里统一转 short 包装，并把 Enchantments（Java 写法）并到 ench。
+    """
+    if not isinstance(tag, dict):
+        return tag
+    pairs = []
+    for key in ("ench", "Enchantments"):
+        lst = tag.get(key)
+        if not isinstance(lst, list):
+            continue
+        for node in lst:
+            if not isinstance(node, dict):
+                continue
+            try:
+                eid = int(_val(node.get("id")) or 0)
+                lvl = int(_val(node.get("lvl")) or _val(node.get("level")) or 0)
+            except (TypeError, ValueError):
+                continue
+            if eid and lvl:
+                pairs.append((eid, lvl))
+    if not pairs:
+        return tag
+    out = dict(tag)
+    out.pop("Enchantments", None)
+    out["ench"] = [
+        {"id": {"__type__": 2, "__value__": max(-32768, min(32767, i))},
+         "lvl": {"__type__": 2, "__value__": max(-32768, min(32767, l))}}
+        for i, l in pairs]
+    return out
 
 
 def _item_enchants(tag):
@@ -3420,9 +3478,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             plain, typed, slot, pos = job.item_queue[0]
             has_ud = isinstance(plain.get("userData"), dict) and bool(plain["userData"])
 
+            # 核对键以 typed（原样 NBT）为准：它才是"完整写入"的那份
             want_keys = []
-            if isinstance(plain.get("userData"), dict):
-                want_keys.extend(plain["userData"].keys())
+            for cand in (typed, plain):
+                ud = cand.get("userData") if isinstance(cand, dict) else None
+                if isinstance(ud, dict) and ud:
+                    want_keys.extend(ud.keys())
+                    break
             if plain.get("enchantData"):
                 want_keys.append("enchantData")
 
@@ -3442,15 +3504,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     return True
                 return self._item_ud_ok(comp, pos, slot, dim, want_keys)
 
-            ok = try_write(plain)
-            if not ok and typed is not None:
+            # 先写 typed（结构里的 NBT 原样），保真度最高：
+            # 盒中盒、32767 级附魔、多层嵌套都靠这一版。
+            ok = False
+            if typed is not None:
                 ok = try_write(typed)
+            if not ok:
+                ok = try_write(plain)
             if not ok and has_ud:
                 # 第三道：只留看得见的字段（名字/附魔/耐久），别让整件物品消失
                 slim = dict(plain)
                 tight = _slim_item_tag(plain["userData"])
                 if tight:
-                    slim["userData"] = tight
+                    slim["userData"] = _native_deep(tight)
                     ok = try_write(slim)
                     if ok:
                         job.item_trim += 1
@@ -3537,6 +3603,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     payload = _merge_nbt(cur, data)
                 else:
                     payload = data
+                # 容器内容整份塞进方块实体，一次写完：
+                # 这是存档的原生形态，盒中盒、多层嵌套、32767 级附魔、
+                # moving_block 这类非法物品全部原样保留 —— 逐件 SpawnItemToContainer
+                # 会被引擎按物品规则校验并整件拒收（日志刷 spawn item failed!），
+                # 而这里根本不走那条校验。
+                if items:
+                    payload["Items"] = _nbt_for_engine(items)
                 if payload:
                     comp.SetBlockEntityData(dim, pos, payload)
                 self._restore_block(job, comp, (x, y, z), pos, dim)
@@ -3548,7 +3621,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     job.err = u"方块实体写入失败：" + util.u(
                         traceback.format_exc().strip().splitlines()[-1])
             if items:
-                self._queue_items(job, items, pos)
+                # 整份写成功就不必逐件再写；万一引擎把 Items 吞了（老版本），
+                # 回读校验后落到逐件路径兜底。
+                back = None
+                try:
+                    back = comp.GetBlockEntityData(dim, pos)
+                except Exception:
+                    back = None
+                landed = (back or {}).get("Items") if isinstance(back, dict) else None
+                if isinstance(landed, list) and len(landed) >= len(items):
+                    job.item_ok += len(items)
+                else:
+                    self._queue_items(job, items, pos)
 
         if job.ent_cursor >= total:
             if job.item_queue:
