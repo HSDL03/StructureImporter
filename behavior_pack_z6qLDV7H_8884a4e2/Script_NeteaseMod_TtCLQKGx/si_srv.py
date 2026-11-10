@@ -450,6 +450,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._manual_cd = {}     # 说明书使用冷却（防长按刷屏）
         self._replay_cd = 0
         self._blockInfo = None
+        self._paletteInfo = None
         self._stateInfo = None
         self._msgInfo = None
         self._itemInfo = None
@@ -466,6 +467,165 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if self._blockInfo is None:
             self._blockInfo = self.factory.CreateBlockInfo(self.levelId)
         return self._blockInfo
+
+    def _pblocks(self):
+        """调色板组件（CreateBlock），批量写方块要用它，和 CreateBlockInfo 不是同一个
+
+        这里不用 self.factory：热重载之后引擎重挂的 system 实例可能没走 __init__，
+        self.factory 会缺；直接问 serverApi 拿更保险。
+        """
+        comp = getattr(self, "_paletteInfo", None)
+        if comp is None:
+            try:
+                lid = getattr(self, "levelId", None) or serverApi.GetLevelId()
+                comp = serverApi.GetEngineCompFactory().CreateBlock(lid)
+            except Exception:
+                util.log_exc("CreateBlock")
+                comp = False
+            self._paletteInfo = comp
+        return comp or None
+
+    def _pb_ready(self):
+        """引擎是否提供调色板批量写（老版本没有这两支接口，得退回逐块）"""
+        comp = self._pblocks()
+        if comp is None:
+            return False
+        return bool(getattr(comp, "GetBlankBlockPalette", None) and
+                    getattr(comp, "SetBlockByBlockPalette", None))
+
+    @staticmethod
+    def _pb_states(states):
+        """mcstructure 的 states -> 调色板的 states
+
+        键必须转 str：引擎只认 str，unicode 键会被静默忽略。树叶的
+        persistent_bit 一丢整片树叶就会枯掉，这是实测踩到的坑，别改回去。
+        """
+        if not states:
+            return {}
+        out = {}
+        for k, v in states.items():
+            out[str(k)] = v
+        return out
+
+    def _pb_build(self, idx, blocks):
+        """把分区内的块按 PALETTE_TILE³ 分桶，返回 (tiles, flat)
+
+        tiles 每项 (起, 止, ox, oy, oz)，flat 是重排后的块下标。
+        按 y 升序排（低层先写），上层方块的支撑先到位。
+        """
+        t = int(cfg.PALETTE_TILE)
+        buckets = {}
+        for i in idx:
+            b = blocks[i]
+            k = (b[0] // t, b[1] // t, b[2] // t)
+            lst = buckets.get(k)
+            if lst is None:
+                buckets[k] = [i]
+            else:
+                lst.append(i)
+        tiles = []
+        flat = []
+        for k in sorted(buckets, key=lambda q: (q[1], q[0], q[2])):
+            lst = buckets[k]
+            tiles.append((len(flat), len(flat) + len(lst),
+                          k[0] * t, k[1] * t, k[2] * t))
+            flat.extend(lst)
+        return tiles, flat
+
+    def _pb_write(self, job, comp, blocks, flat, st, en, ox, oy, oz):
+        """把一个小块的方块一次写进世界
+
+        三个必须踩对的点（全部实测确认，改之前先看这里）：
+        - volume 的顺序是 (Z, X, Y)，不是 (X, Y, Z)。传反了正方体看不出来，
+          非正方体结构会整块错位（曾经表现为"树叶/雪层凭空消失"）
+        - common 下标 = z + x*Z + y*X*Z，z 变化最快 —— 和 mcstructure 的
+          x + z*X 正好互为转置
+        - 方块名和 states 键都必须是 str；unicode 让接口静默返回 False
+        """
+        t = int(cfg.PALETTE_TILE)
+        common = {}
+        states = {}
+        for i in range(st, en):
+            b = blocks[flat[i]]
+            idx = (b[2] - oz) + (b[0] - ox) * t + (b[1] - oy) * t * t
+            key = (str(b[3]), int(b[4]))
+            lst = common.get(key)
+            if lst is None:
+                common[key] = [idx]
+                states[key] = self._pb_states(b[5])
+            else:
+                lst.append(idx)
+        data = {"states": states, "volume": (t, t, t), "extraStates": {},
+                "common": common, "extra": {}, "void": False,
+                "eliminateAir": True, "actor": {}}
+        try:
+            pal = comp.GetBlankBlockPalette()
+            if pal is None:
+                return False
+            if not pal.DeserializeBlockPalette(data):
+                return False
+            return bool(comp.SetBlockByBlockPalette(
+                pal, job.dim,
+                (job.base[0] + ox, job.base[1] + oy, job.base[2] + oz), 0, 0))
+        except Exception:
+            if job.err is None:
+                job.err = util.u(traceback.format_exc().strip().splitlines()[-1])
+            return False
+
+    def _step_blocks_palette(self, job, sec):
+        """批量写当前分区的方块：按小块摊到多个 tick，等价逐块版本但快 40 倍"""
+        comp = self._pblocks()
+        if comp is None:
+            job.pb_cap = False
+            return
+        blocks = job.blocks
+        if getattr(job, "pb_sec", None) is not sec:
+            job.pb_tiles, job.pb_flat = self._pb_build(sec["blocks"], blocks)
+            job.pb_sec = sec
+            job.pb_i = 0
+        tiles = job.pb_tiles
+        flat = job.pb_flat
+        budget = self._write_budget()
+        t0 = time.time()
+        n = 0
+        while job.pb_i < len(tiles):
+            st, en, ox, oy, oz = tiles[job.pb_i]
+            cnt = en - st
+            if self._pb_write(job, comp, blocks, flat, st, en, ox, oy, oz):
+                job.ok += cnt
+            else:
+                job.fail += cnt
+                job.retry.extend(flat[st:en])   # 整块退回逐块重写
+                if job.err is None:
+                    job.err = u"批量写入返回失败（区块未加载？）"
+            job.pb_i += 1
+            n += 1
+            if n >= int(cfg.PALETTE_CELLS):
+                break
+            if (time.time() - t0) * 1000.0 >= budget:
+                break
+        if job.pb_i < len(tiles):
+            return
+        job.pb_tiles = None
+        job.pb_flat = None
+        job.pb_sec = None
+        job.cursor = len(sec["blocks"])
+        self._after_blocks(job, sec)
+
+    def _after_blocks(self, job, sec):
+        """一个分区的方块写完后决定下一步（逐块/批量两条路径共用）"""
+        if job.retry:
+            job.phase = "retry"
+            job.retry_cursor = 0
+            job.retry_pass = 0
+        elif sec["wake"]:
+            job.phase = "wake"
+            job.wake_cursor = 0
+        elif sec["ents"]:
+            job.phase = "ents"
+            job.ent_cursor = 0
+        else:
+            self._next_section(job)
 
     def _states(self):
         if self._stateInfo is None:
@@ -3034,6 +3194,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.phase = "done"
             return
         idx = sec["blocks"]
+        if getattr(job, "pb_cap", None) is None:
+            job.pb_cap = bool(cfg.PALETTE_WRITE and self._pb_ready())
+        if job.pb_cap and len(idx) >= int(cfg.PALETTE_MIN):
+            self._step_blocks_palette(job, sec)
+            return
         total = len(idx)
         written = 0
         bx, by, bz = job.base
@@ -3103,18 +3268,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
 
         # 分区内部顺序：方块 ->（失败重试）-> 红石唤醒 -> 方块实体
         # 唤醒阶段会整块重写红石方块，写之前就把实体数据铺好会被清掉
-        if job.retry:
-            job.phase = "retry"
-            job.retry_cursor = 0
-            job.retry_pass = 0
-        elif sec["wake"]:
-            job.phase = "wake"
-            job.wake_cursor = 0
-        elif sec["ents"]:
-            job.phase = "ents"
-            job.ent_cursor = 0
-        else:
-            self._next_section(job)
+        self._after_blocks(job, sec)
 
     def _step_retry(self, job, comp):
         """重试本分区里写入失败的方块（多为区块未加载；TP 后一 tick 就能写上）
