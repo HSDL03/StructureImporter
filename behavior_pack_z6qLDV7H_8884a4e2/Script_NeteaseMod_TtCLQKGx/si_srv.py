@@ -282,7 +282,7 @@ HELP = [
     u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
     u"§f/structureim preset <稳|均衡|极速> §7一键套用整套参数（128图120秒选极速）",
-    u"§f/structureim verify <开|关> §7导完逐块回读校验，缺的补写（默认开）",
+    u"§f/structureim verify <开|关> §7导完逐块回读，只报差多少块（不补写，默认关）",
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
     u"§f/structureim tac §7清理本插件残留的常加载区（只删 si_ 开头，不动指令区）",
@@ -630,10 +630,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             text = u"§b▶ 结构导入 §7准备分区 §f%d/%d §7· 扫描方块（分帧，不卡）" % (
                 cur, job.total)
         elif job.phase == "verify":
-            text = u"§b▶ 结构导入 §9逐块校验 §f%d/%d §7· 第 %d 轮 §7· 已补 %d" % (
+            text = u"§b▶ 结构导入 §9逐块核对 §f%d/%d §7· 不符 %d §7· 只查不补" % (
                 int(getattr(job, "vf_cursor", 0) or 0), job.total,
-                int(getattr(job, "vf_pass", 0) or 0) + 1,
-                int(getattr(job, "vf_fixed", 0) or 0))
+                int(getattr(job, "vf_miss", 0) or 0))
         else:
             phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
                      u"ents": u"§d方块实体", u"items": u"§d容器物品",
@@ -1049,7 +1048,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.push(pid, self._page)
 
     def cmd_verify(self, pid, text):
-        """收尾逐块回读校验：写完再读一遍，缺哪块补哪块（默认开）"""
+        """收尾逐块回读核对：只报差异块数，不补写（默认关）"""
         t = (text or u"").strip().lower()
         if t in (u"on", u"1", u"开", u"true"):
             v = True
@@ -1063,9 +1062,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             return
         self.verify = v
         self._save()
-        self.tell(pid, u"§a逐块回读校验：§f%s §7（%s）" %
+        self.tell(pid, u"§a逐块回读核对：§f%s §7（%s）" %
                   (u"开" if v else u"关",
-                   u"导完把每一块读一遍，缺的自动补写" if v else u"只看写入返回值，快一点但可能漏"))
+                   u"导完读一遍，只告诉你多少块没对上，不补写" if v else u"只信写入返回值，最快"))
 
     def cmd_splitz(self, pid, text):
         """分区边长：0 = 自动按体量自适应；16~128 = 自定义固定边长"""
@@ -1327,14 +1326,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.budget = cfg.WRITE_BUDGET_MS_TURBO
         # 地图画 640×640 要在 120 秒内落地，光靠写入提速不够：
         # 25 张图每张都要"挂常加载 -> 站进去 -> 让引擎画"，
-        # 这里把地图档一起拉到极速（单张 ≈2 秒），并保持回读校验不关。
+        # 这里把地图档一起拉到极速（单张 ≈2 秒）。
         self.map_speed = 2
         if not self.split_size:
             self.split_size = int(cfg.SPLIT_SIZE_MAX)
         self._save()
         self.tell(pid, u"§a已切到提速组合：§f线程 %d · 邻区并行 %d · 急速 · 预算 %.0f ms · 地图极速 · 分区 %d 格" %
                   (self.threads, self.parallel, self.budget, self.split_size))
-        self.tell(pid, u"§7回读校验仍然开着（不漏块）；觉得慢可 /structureim verify off")
+        self.tell(pid, u"§7回读核对默认关（只信写入返回值）；想点数可 /structureim verify on")
 
     def cmd_nbtlimit(self, pid, text):
         """物品 NBT 上限：0 = 不裁剪（默认，盒中盒原样保留）"""
@@ -3375,14 +3374,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if job.tick < job.seal_until:
                 job.phase = "seal"
                 return
-        # 最后一道保险：逐块回读，名字对不上就补写（"一块都不漏"就靠这里）
+        # 收尾核对：读一遍数差异，只报不补（玩家要求：漏了也不用补）
         if self.verify and not getattr(job, "vf_done", False):
             job.phase = "verify"
-            if getattr(job, "vf_pass", 0) == 0 and \
-                    getattr(job, "vf_cursor", 0) == 0 and \
+            if getattr(job, "vf_cursor", 0) == 0 and \
                     not getattr(job, "vf_announced", False):
                 job.vf_announced = True
-                job.note = u"§9逐块回读校验（%d 块）" % job.total
+                job.note = u"§9逐块核对（%d 块，只查不补）" % job.total
             return
         job.phase = "done"
 
@@ -3400,13 +3398,15 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         return False
 
     def _step_verify(self, job, comp):
-        """逐块回读校验：写完不等于写上了，读一遍才知道
+        """逐块回读：只点数，不补写
 
-        引擎在三种情况下会"写成功但其实没写上"：区块还没完全加载、
-        液体流动把方块冲掉、支撑方块判断把火把/铁轨弹掉。分区末尾的重试
-        只覆盖第一种，而且是"写返回失败"才重试。所以收尾这里再整体读一遍：
-        读不到（区块没加载）不算缺失，留到下一轮；读到了名字不对就补写。
-        补写过就再验一轮，最多 VERIFY_PASSES 轮。
+        引擎有三种情况"写返回成功但其实没写上"：区块还没完全加载、液体流动把方块
+        冲掉、支撑判断把火把/铁轨弹掉。这里读一遍，把对不上的块数报出来，
+        **但不自动补写** —— 补写会在液体/重力区域反复重建，跟"导入一次"的预期
+        不符（实测霜塔补 63 块多花近 2 秒，象牙城堡这种量级代价更大）。
+        要不要补由玩家自己决定，插件只负责把数字说清楚。
+
+        读不到（区块没加载）不算缺失，单独计数上报。
         """
         total = job.total
         blocks = job.blocks
@@ -3415,8 +3415,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         t0 = time.time()
         budget = cfg.VERIFY_SLICE_MS
         cur = int(getattr(job, "vf_cursor", 0) or 0)
-        fixed = int(getattr(job, "vf_fixed", 0) or 0)
-        pass_fixed = int(getattr(job, "vf_pass_fixed", 0) or 0)
+        miss = int(getattr(job, "vf_miss", 0) or 0)
         unloaded = 0
         while cur < total:
             x, y, z, name, aux, states = blocks[cur]
@@ -3427,37 +3426,26 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             except Exception:
                 got = None
             if got is None:
-                unloaded += 1            # 区块没加载：不是缺失，下一轮再看
+                unloaded += 1            # 区块没加载：不是缺失，单独计
             else:
                 gname = got.get("name") if isinstance(got, dict) else None
                 if not self._same_block(gname, name):
-                    try:
-                        if self._place_one(comp, pos, name, aux, states, dim, False):
-                            fixed += 1
-                            pass_fixed += 1
-                    except Exception:
-                        pass
+                    miss += 1
             if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= budget:
                 break
         job.vf_cursor = cur
-        job.vf_fixed = fixed
-        job.vf_pass_fixed = pass_fixed
+        job.vf_miss = miss
         job.vf_unloaded = unloaded
         if cur < total:
             return
-        # 一轮读完
-        job.vf_pass = int(getattr(job, "vf_pass", 0) or 0) + 1
-        job.vf_cursor = 0
-        if job.vf_pass_fixed > 0 and job.vf_pass < cfg.VERIFY_PASSES:
-            job.vf_pass_fixed = 0
-            return                      # 这一轮补写过 -> 再验一轮确认全绿
         job.vf_done = True
-        if job.vf_fixed:
-            self.tell(job.pid, u"§a回读校验：§f补写 %d 块§7（%d 轮，共 %d 块）" %
-                      (job.vf_fixed, job.vf_pass, total))
+        if miss:
+            self.tell(job.pid, u"§e回读校验：§f%d 块与结构不一致§7（共 %d 块，不补写）" %
+                      (miss, total))
+        else:
+            self.tell(job.pid, u"§a回读校验：§f%d 块全部对上" % total)
         if job.vf_unloaded:
-            self.tell(job.pid, u"§e有 %d 块因区块未加载没能复核，验收时留意一下" %
-                      job.vf_unloaded)
+            self.tell(job.pid, u"§7其中 %d 块因区块未加载没能复核" % job.vf_unloaded)
         self._final_phase(job)
 
     def _step_mobs(self, job):

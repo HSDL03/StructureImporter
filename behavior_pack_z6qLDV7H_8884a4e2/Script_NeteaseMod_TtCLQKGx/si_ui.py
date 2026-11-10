@@ -259,7 +259,7 @@ SET_ROWS = [
     ("turbo",      u"急速模式",   "bool"),
     ("freeze",     u"冻结时间",   "bool"),
     ("ta",         u"纯常加载",   "bool"),
-    ("verify",     u"回读校验",   "bool"),
+    ("verify",     u"回读核对",   "bool"),
     ("maparea",    u"常加载形状", "maparea"),
     ("threads",    u"解析线程",   "int"),
     ("parallel",   u"邻区并行",   "int"),

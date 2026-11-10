@@ -124,7 +124,7 @@
 | `/structureim splitz <0\|16-128>` | 分区边长：0 = 自动（按实测直方图定），16-128 = 自定义 |
 | `/structureim ta <开\|关>` | 纯常加载：整张结构挂 tickingarea，玩家不再跟随传送 |
 | `/structureim tac` | 清理本插件残留的常加载区（只删 `si_` 开头，不动别人的指令区） |
-| `/structureim verify <开\|关>` | 导完逐块回读校验，缺的自动补写（默认开） |
+| `/structureim verify <开\|关>` | 导完逐块回读，只报差多少块，**不补写**（默认关） |
 | `/structureim preset <稳\|均衡\|极速>` | 一键套用整套参数 |
 | `/structureim fast` | 一键提速（后台解析 + 邻区并行 + 急速 + 满预算） |
 | `/structureim manual` | 聊天框版图文教程 |
