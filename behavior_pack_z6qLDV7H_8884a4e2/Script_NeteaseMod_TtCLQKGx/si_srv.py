@@ -58,6 +58,27 @@ def _native(v):
     return util.b(v) if _PY2 else v
 
 
+def _native_deep(node):
+    """递归把 unicode 键和字符串值转成 UTF-8 字节串（py2 专用）
+
+    这是物品 NBT 丢失的真正原因：引擎收下 itemDict 后会把 userData 里的
+    unicode 字符串整条丢掉。实测同一个 {'display': {'Name': u'X'}} 写进去，
+    回读 userData 里没有 display；换成 str 版本 'X' 就完整保留。
+    """
+    if not _PY2:
+        return node
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            out[util.b(k) if isinstance(k, _STR) else k] = _native_deep(v)
+        return out
+    if isinstance(node, list):
+        return [_native_deep(v) for v in node]
+    if isinstance(node, _STR):
+        return util.b(node)
+    return node
+
+
 def _eng_states(st):
     """states 交给引擎前转成 C++ 层能吃的样子
 
@@ -208,7 +229,7 @@ def _item_dict(entry):
     # 数量和堆叠上限对不上引擎会直接拒收，先夹住
     if count > 64:
         count = 64
-    base = {"itemName": name, "count": count, "auxValue": aux}
+    base = {"itemName": _native(name), "count": count, "auxValue": aux}
     tag = _val(node.get("tag")) or _val(node.get("ItemTag"))
     plain, typed, trim = None, None, False
     if isinstance(tag, dict) and tag:
@@ -217,17 +238,56 @@ def _item_dict(entry):
             tag = _slim_item_tag(tag)
             trim = True
         if tag:
+            ench = _item_enchants(tag)
             p = dict(base)
             t = dict(base)
-            try:
-                p["userData"] = _typed_to_plain(tag)
-            except Exception:
-                p["userData"] = tag
-            t["userData"] = tag
+            p_tag = _typed_to_plain(tag)
+            # 附魔走顶层 enchantData：这是引擎唯一认得稳的形态。
+            # userData 里留 ench（普通 int）会被引擎存成 TAG_Int，回读变成 (0, 0)；
+            # 只有 {__type__:2} 包装才对，而 enchantData 两条路都能照顾到。
+            if isinstance(p_tag, dict):
+                for k in ("ench", "Enchantments"):
+                    p_tag.pop(k, None)
+            if ench:
+                p["enchantData"] = ench
+                t["enchantData"] = ench
+            if p_tag:
+                p["userData"] = _native_deep(p_tag)
+            # typed 版本保留原始 __type__ 结构，只把 unicode 转成 str
+            t["userData"] = _native_deep(tag)
+            if "enchantData" in p:
+                # 别让引擎按 userData 里的 old 形态再覆盖一次
+                t["userData"] = _native_deep(
+                    dict((k, v) for k, v in tag.items()
+                         if k not in ("ench", "Enchantments")))
             plain, typed = p, t
     if plain is None:
         plain = dict(base)
     return {"plain": plain, "typed": typed, "slot": slot, "trim": trim}
+
+
+def _item_enchants(tag):
+    """从物品 NBT 里抽出附魔 -> [(id, lvl)]
+
+    兼容两种写法：ench（Bedrock/本结构的实际形态）和 Enchantments（Java 风格）。
+    取不出来的直接跳过，绝不让一条坏数据把整件物品带崩。
+    """
+    out = []
+    for key in ("ench", "Enchantments"):
+        lst = tag.get(key)
+        if not isinstance(lst, list):
+            continue
+        for node in lst:
+            try:
+                if not isinstance(node, dict):
+                    continue
+                eid = int(_val(node.get("id")) or 0)
+                lvl = int(_val(node.get("lvl")) or _val(node.get("level")) or 0)
+            except (TypeError, ValueError):
+                continue
+            if eid and lvl > 0:
+                out.append((eid, lvl))
+    return out
 
 
 # 物品 NBT 里"玩家看得见"的字段：NBT 大到必须裁剪时只留这些
@@ -368,6 +428,7 @@ class Job(object):
         self.ent_fixed = 0
         self.cmd_fixed = 0
         self.item_trim = 0      # 因 NBT 过大/过深被裁掉数据的物品数
+        self.item_bare = 0      # 引擎拒收 NBT、只放下物品本体的件数
         self.item_queue = []    # 待写入容器的物品 [(plainDict, typedDict, slot, pos)]
         self.wake_cursor = 0
         self.blk_at = {}
@@ -3359,22 +3420,33 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             plain, typed, slot, pos = job.item_queue[0]
             has_ud = isinstance(plain.get("userData"), dict) and bool(plain["userData"])
 
+            want_keys = []
+            if isinstance(plain.get("userData"), dict):
+                want_keys.extend(plain["userData"].keys())
+            if plain.get("enchantData"):
+                want_keys.append("enchantData")
+
             def try_write(cand):
-                """写一次；带 NBT 的必须回读确认没被吞"""
+                """写一次；带 NBT 的必须回读确认没被吞
+
+                回读一定要 getUserData=True —— 少了这个参数，引擎返回的
+                userData 永远是空，于是每件"其实写成功"的物品都被判成失败，
+                白跑两轮降级还把 NBT 覆盖成裁剪版（曾经的真实故障）。
+                """
                 try:
                     if not comp.SpawnItemToContainer(cand, slot, pos, dim):
                         return False
                 except Exception:
                     return False
-                if not isinstance(cand.get("userData"), dict) or not cand["userData"]:
+                if not want_keys:
                     return True
-                return self._item_ud_ok(comp, pos, slot, dim)
+                return self._item_ud_ok(comp, pos, slot, dim, want_keys)
 
             ok = try_write(plain)
             if not ok and typed is not None:
                 ok = try_write(typed)
             if not ok and has_ud:
-                # 最后一道：只留看得见的字段（名字/附魔/耐久），别让整件物品消失
+                # 第三道：只留看得见的字段（名字/附魔/耐久），别让整件物品消失
                 slim = dict(plain)
                 tight = _slim_item_tag(plain["userData"])
                 if tight:
@@ -3382,6 +3454,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     ok = try_write(slim)
                     if ok:
                         job.item_trim += 1
+            if not ok:
+                # 第四道：引擎根本不吃这件物品的 NBT（典型是一身 32767 级附魔、
+                # moving_block 这种非法物品，日志会刷 spawn item failed!）。
+                # 退到裸物品，至少东西还在、位置不空 —— 玩家能看见并自己处理。
+                bare = {"itemName": plain["itemName"], "count": plain["count"],
+                        "auxValue": plain.get("auxValue", 0)}
+                try:
+                    if comp.SpawnItemToContainer(bare, slot, pos, dim):
+                        ok = True
+                        job.item_bare += 1
+                except Exception:
+                    pass
             if ok:
                 job.item_ok += 1
             else:
@@ -3392,20 +3476,31 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 return
         self._next_section(job)
 
-    def _item_ud_ok(self, comp, pos, slot, dim):
-        """回读容器格位，确认物品的 userData 真的落进去了
+    def _item_ud_ok(self, comp, pos, slot, dim, want_keys=None):
+        """回读容器格位，确认物品的 NBT 真的落进去了
 
-        读不到就别当失败（有的容器/版本没有 GetContainerItem），
-        读到了但是空 userData，那就是引擎把 NBT 吞了。
+        第 4 个参数 getUserData 必须显式传 True，否则引擎不返回 userData，
+        所有写入都会被误判成"被吞了"。
+        按 want_keys 逐个核对：只要有一半以上的键还在就算成功（引擎偶尔会
+        补 modEnchant 这类字段，键集合不可能完全相等）。
         """
         try:
-            cur = comp.GetContainerItem(pos, slot, dim)
+            cur = comp.GetContainerItem(pos, slot, dim, True)
         except Exception:
             return True
         if not isinstance(cur, dict):
             return False
         ud = cur.get("userData")
-        return isinstance(ud, dict) and bool(ud)
+        if not want_keys:
+            return isinstance(ud, dict) and bool(ud)
+        hit = 0
+        for k in want_keys:
+            if k == "enchantData":
+                if cur.get("enchantData"):
+                    hit += 1
+            elif isinstance(ud, dict) and k in ud:
+                hit += 1
+        return hit * 2 >= len(want_keys)
 
     def _step_ents(self, job, comp):
         """把方块实体数据写回去
@@ -4354,6 +4449,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     msg += u"§7(失败 %d)" % job.item_fail
                 if job.item_trim:
                     msg += u"§7(裁剪 %d)" % job.item_trim
+                if job.item_bare:
+                    msg += u"§7(仅本体 %d)" % job.item_bare
             if job.entities:
                 msg += u" §7· 方块实体 §f%d" % job.ent_ok
                 if job.ent_fail:
