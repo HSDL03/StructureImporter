@@ -44,14 +44,14 @@
     "si_set_close": {
         "type": "button",
         "size": [
-            "32px",
-            "32px"
+            "28px",
+            "28px"
         ],
         "anchor_from": "center",
         "anchor_to": "center",
         "offset": [
-            306,
-            -176.0
+            290,
+            -160.0
         ],
         "layer": 2,
         "$control_alpha": 1.0,
