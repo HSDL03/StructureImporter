@@ -275,7 +275,9 @@ def _nbt_for_engine(node):
             if t in (9, 10):                 # list / compound：引擎要裸结构
                 return _nbt_for_engine(node["__value__"])
             if t is not None:
-                return {"__type__": t, "__value__": _nbt_for_engine(node["__value__"])}
+                # 键也走 _native：py2 下必须是 str，不能靠字面量碰运气
+                return {_native("__type__"): t,
+                        _native("__value__"): _nbt_for_engine(node["__value__"])}
         out = {}
         for k, v in node.items():
             out[_native(k) if isinstance(k, _STR) else k] = _nbt_for_engine(v)
@@ -3275,7 +3277,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         # 有方块实体时，prep 扫块那遍已经顺路把命中坐标记下来了（st["blk_at"]）
         job.blk_at = st.get("blk_at") or {}
         if self._skipped:
-            self.note(u"跳过运行时方块 %d" % self._skipped)
+            # 这里以前写成 self.note(...)，而 note 只是 job 上的字符串字段，
+            # 不是方法 —— 只要结构里有运行时方块被跳过（w(1) 1165 块、
+            # 1.8人工商店 66 块）就整个导入中断。
+            job.note = u"跳过运行时方块 %d" % self._skipped
         blocks = job.blocks
         side = st["side"]
         self._liquid_idx = st["liq"]
@@ -3621,15 +3626,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     job.err = u"方块实体写入失败：" + util.u(
                         traceback.format_exc().strip().splitlines()[-1])
             if items:
-                # 整份写成功就不必逐件再写；万一引擎把 Items 吞了（老版本），
-                # 回读校验后落到逐件路径兜底。
+                # 整份写成功就不必逐件再写。
+                # 判据只能是"读回来是空的"：引擎在写完瞬间读回可能少几件
+                # （重复槽位会被合并），以前拿"件数相等"当判据，结果把
+                # 刚写好的完整 NBT 又用裸物品覆盖了一遍（1.8人工商店 182 件全丢）。
                 back = None
                 try:
                     back = comp.GetBlockEntityData(dim, pos)
                 except Exception:
                     back = None
                 landed = (back or {}).get("Items") if isinstance(back, dict) else None
-                if isinstance(landed, list) and len(landed) >= len(items):
+                if isinstance(landed, list) and landed:
                     job.item_ok += len(items)
                 else:
                     self._queue_items(job, items, pos)

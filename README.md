@@ -14,8 +14,8 @@
 <p align="center">
 	<a href="https://github.com/HSDL03/StructureImporter/releases">
 		<img
-			src="https://img.shields.io/badge/version-0.0.3-brightgreen.svg"
-			alt="Version: 0.0.3"
+			src="https://img.shields.io/badge/version-0.0.5-brightgreen.svg"
+			alt="Version: 0.0.5"
 		/>
 	</a>
 	<a href="https://opensource.org/license/mit">
@@ -91,7 +91,7 @@
 
 **方式一：直接用发布包（推荐）**
 
-1. 到 [Releases](https://github.com/HSDL03/StructureImporter/releases) 下载最新的 `StructureImporter_v0.0.3.zip` 并解压
+1. 到 [Releases](https://github.com/HSDL03/StructureImporter/releases) 下载最新的 `StructureImporter_v0.0.5.zip` 并解压
 2. 把解压出的行为包、资源包目录连同 `world_behavior_packs.json`、`world_resource_packs.json` 放进你的开发世界目录（或用 MC Studio 打开）
 3. 进入世界，聊天框输入 `/structureim ui` 验证 MOD 已生效
 
@@ -188,6 +188,19 @@ A: 请更新到最新版本。旧版存在挂框数据格式与镜像 bug。
 
 ❓ **Q: 如何报告 bug 或建议新功能？**
 A: 请在 [Issues](https://github.com/HSDL03/StructureImporter/issues) 页面提交详细报告。
+
+## 更新日志
+
+**0.0.5**
+- 方块写入改用引擎调色板批量通道，实测约 40 倍加速（霜塔 35986 块 7.7s）
+- 容器与方块实体改为整份写入 `Items`，绕开逐件规则校验，多层嵌套 / 32767 级附魔 / `moving_block` 等极端物品完整保留
+- 修复容器物品 NBT 整体丢失（`unicode` 键名未转 `str`、回读漏传 `getUserData=True`）
+- 修复结构内含运行时方块（如 `w(1)` 1165 块）时导入直接中断
+- 收尾回读核对改为「只核对不补写」，默认关闭，避免大结构卡在最后一步
+
+**0.0.4** — 设置页关闭按钮下移内缩，不再压到面板圆角；版本号统一
+
+**0.0.3** — 图形界面（主界面 + 设置页）、地图画挂框修复
 
 ## 许可证
 
