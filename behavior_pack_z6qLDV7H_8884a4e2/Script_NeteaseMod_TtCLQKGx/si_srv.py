@@ -488,6 +488,22 @@ def _new_table_parts():
             "pid": array("i"), "pal": [], "pmap": {}}
 
 
+def _bb_touch(bb, x, y, z):
+    """把一个坐标并进分区包围盒 [x1,x2,y1,y2,z1,z2]（就地改）"""
+    if x < bb[0]:
+        bb[0] = x
+    elif x > bb[1]:
+        bb[1] = x
+    if y < bb[2]:
+        bb[2] = y
+    elif y > bb[3]:
+        bb[3] = y
+    if z < bb[4]:
+        bb[4] = z
+    elif z > bb[5]:
+        bb[5] = z
+
+
 class Job(object):
     """一次放置任务（不用 __slots__，方便热重载时整类替换）
 
@@ -531,7 +547,9 @@ class Job(object):
         self.item_queue = []    # 待写入容器的物品 [(plainDict, typedDict, slot, pos)]
         self.item_cursor = 0    # 队列游标（用索引推进，不做 pop(0)）
         self.pb_ms = 0.0        # 调色板单块（16³）实测耗时的滑动平均，用来卡预算
+        self.pb_tag = None      # 调色板当前批次的标记：u"b" 普通块 / u"f" 易碎块
         self.wake_cursor = 0
+        self.frail_cursor = 0    # 本分区易碎方块（台阶/栅栏/火把…）的写入进度
         self.blk_at = {}
         self.phase = "blocks"
         # 防大型结构缺失：每区先加常加载区块，等加载再放置
@@ -759,26 +777,37 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 job.err = util.u(traceback.format_exc().strip().splitlines()[-1])
             return False
 
-    def _step_blocks_palette(self, job, sec):
-        """批量写当前分区的方块：按小块摊到多个 tick，等价逐块版本但快 40 倍"""
+    def _step_blocks_palette(self, job, sec, idx=None, tag=u"b"):
+        """批量写当前分区的方块：按小块摊到多个 tick，等价逐块版本但快 40 倍
+
+        idx/tag 让易碎方块（frail 阶段）复用同一条通道：玻璃板、活板门这种
+        "落下去要判断连接"的方块，逐块 SetBlockNew 会被引擎拒（实测别墅 397 块
+        失败），批量通道直接落数据反而全过。tag 用来区分同一分区里的两批。
+        """
+        if idx is None:
+            idx = sec["blocks"]
         comp = self._pblocks()
         if comp is None:
             job.pb_cap = False
+            if tag == u"f":
+                self._after_frail(job, sec)
             return
         blocks = job.blocks
-        if getattr(job, "pb_sec", None) is not sec:
+        if getattr(job, "pb_sec", None) is not sec or \
+                getattr(job, "pb_tag", None) != tag:
             # 分帧建表：1.6 万块的区分桶+排序要 30ms，不能压在这一帧上
             bst = getattr(job, "pb_st", None)
-            if bst is None or bst.get("sec") is not sec:
-                bst = {"buckets": {}, "i": 0, "sec": sec}
+            if bst is None or bst.get("sec") is not sec or bst.get("tag") != tag:
+                bst = {"buckets": {}, "i": 0, "sec": sec, "tag": tag}
                 job.pb_st = bst
-            built = self._pb_build(sec["blocks"], blocks, bst,
+            built = self._pb_build(idx, blocks, bst,
                                    float(cfg.PREP_SLICE_MS))
             if built is None:
                 return                       # 还没分完，这一帧就先不写
             job.pb_tiles, job.pb_flat = built
             job.pb_st = None
             job.pb_sec = sec
+            job.pb_tag = tag
             job.pb_i = 0
         tiles = job.pb_tiles
         flat = job.pb_flat
@@ -803,7 +832,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 job.ok += cnt
             else:
                 job.fail += cnt
-                job.retry.extend(flat[st:en])   # 整块退回逐块重写
+                if tag == u"f":
+                    # 易碎批：失败块挂到收尾核对名单（retry 会被换区清空）
+                    job.wash_idx.extend(flat[st:en])
+                else:
+                    job.retry.extend(flat[st:en])   # 整块退回逐块重写
                 if job.err is None:
                     job.err = u"批量写入返回失败（区块未加载？）"
             dt = (time.time() - _w0) * 1000.0
@@ -816,16 +849,115 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.pb_tiles = None
         job.pb_flat = None
         job.pb_sec = None
-        job.cursor = len(sec["blocks"])
-        self._after_blocks(job, sec)
+        job.pb_tag = None
+        if tag == u"f":
+            job.frail_cursor = len(idx)
+            self._after_frail(job, sec)
+        else:
+            job.cursor = len(idx)
+            self._after_blocks(job, sec)
 
     def _after_blocks(self, job, sec):
-        """一个分区的方块写完后决定下一步（逐块/批量两条路径共用）"""
+        """一个分区的方块写完后决定下一步（逐块/批量两条路径共用）
+
+        顺序：失败重试 -> 易碎方块 -> 红石唤醒 -> 方块实体。
+        易碎方块排在重试之后、唤醒之前：它的支撑（墙、地板、栅栏柱）这一轮
+        已经全部就位，才不会落下去就变成掉落物。
+        """
         if job.retry:
             job.phase = "retry"
             job.retry_cursor = 0
             job.retry_pass = 0
+        elif sec.get("frail"):
+            job.phase = "frail"
+            job.frail_cursor = 0
         elif sec["wake"]:
+            job.phase = "wake"
+            job.wake_cursor = 0
+        elif sec["ents"]:
+            job.phase = "ents"
+            job.ent_cursor = 0
+        else:
+            self._next_section(job)
+
+    def _step_frail(self, job, comp):
+        """分区最后一遍：写需要支撑 / 不完整的方块
+
+        台阶、栅栏、墙、玻璃板、活板门、火把、花、藤蔓、铁轨、告示牌…
+        这些方块落下的那一刻引擎就要判断支撑，而支撑它们的方块很可能还没轮到，
+        于是当场变成掉落物（大型建筑的"碎屑"就是这么来的）。
+        这里等本分区的普通方块全部铺完之后再写，并且**不触发邻居更新**——
+        邻居更新正是把火把、铁轨弹掉的那只手。
+        """
+        sec = self._section(job)
+        if sec is None:
+            job.phase = "done"
+            return
+        idx = sec.get("frail") or []
+        if not idx:
+            self._after_frail(job, sec)
+            return
+        # 量大就走调色板批量：玻璃板/活板门这类"要判断连接"的方块，
+        # 逐块 SetBlockNew 会被引擎拒（真机 397 块写不进去），批量通道全过
+        if getattr(job, "pb_cap", None) is None:
+            job.pb_cap = bool(cfg.PALETTE_WRITE and self._pb_ready())
+        if job.pb_cap and len(idx) >= int(cfg.PALETTE_MIN):
+            self._step_blocks_palette(job, sec, idx, u"f")
+            return
+        total = len(idx)
+        n = 0
+        bx, by, bz = job.base
+        dim = job.dim
+        blocks = job.blocks
+        budget = self._write_budget()
+        limit = max(cfg.WRITE_BATCH_MIN, job.batch)
+        t0 = time.time()
+        cache = {}                         # (name, aux, states) -> 方块字典
+        set_block = comp.SetBlockNew
+        raw_ok = True
+        while job.frail_cursor < total and n < limit:
+            i = idx[job.frail_cursor]
+            job.frail_cursor += 1
+            n += 1
+            x, y, z, name, aux, states = blocks[i]
+            key = (name, aux, id(states))
+            blk = cache.get(key)
+            if blk is None:
+                blk = {"name": name, "aux": int(aux)}
+                if states:
+                    blk["states"] = _eng_states(states)
+                cache[key] = blk
+            pos = (bx + x, by + y, bz + z)
+            try:
+                # 无状态方块（地毯、玻璃板、台阶大半）走最快的直调路径：
+                # 一个结构里易碎块可能占七成（e 的 6.5 万块里 4.6 万是地毯），
+                # 每条都走 _place_block 的"补状态"分支会慢一倍多
+                if not states and raw_ok:
+                    try:
+                        ok = set_block(pos, blk, 0, dim, True, False)
+                    except TypeError:
+                        raw_ok = False
+                        ok = self._place_block(comp, pos, blk, states, dim, False)
+                else:
+                    ok = self._place_block(comp, pos, blk, states, dim, False)
+                if ok:
+                    job.ok += 1
+                else:
+                    job.fail += 1
+                    # 这里失败的块不进 retry（下个分区开头会清空），
+                    # 直接挂到收尾的 wash 名单上：那里会逐格核对并补写
+                    job.wash_idx.append(i)
+            except Exception:
+                job.fail += 1
+                job.wash_idx.append(i)
+            if (n & 15) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
+        if job.frail_cursor >= total:
+            self._after_frail(job, sec)
+
+    def _after_frail(self, job, sec):
+        """易碎方块写完后继续：红石唤醒 -> 方块实体 -> 下一个分区"""
+        if sec["wake"]:
             job.phase = "wake"
             job.wake_cursor = 0
         elif sec["ents"]:
@@ -1001,7 +1133,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 int(getattr(job, "vf_cursor", 0) or 0), job.total,
                 int(getattr(job, "vf_miss", 0) or 0))
         else:
-            phase = {u"blocks": u"§f放置", u"wake": u"§b红石唤醒",
+            phase = {u"blocks": u"§f放置", u"frail": u"§e补写易碎方块",
+                     u"wake": u"§b红石唤醒",
                      u"ents": u"§d方块实体", u"items": u"§d容器物品",
                      u"mobs": u"§6生成实体"}.get(job.phase, job.phase)
             text = u"§b▶ 结构导入 §f%d%% §7%d/%d %s%s §7· %s%s" % (
@@ -3079,6 +3212,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self._step_prep(job)
         elif job.phase == "blocks":
             self._step_blocks(job, comp)
+        elif job.phase == "frail":
+            self._step_frail(job, comp)
         elif job.phase == "retry":
             self._step_retry(job, comp)
         elif job.phase == "wake":
@@ -3338,49 +3473,53 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     if kw in low:
                         wash_hit = True
                         break
-                flags[nm] = (nm in cfg.LIQUID_BLOCKS, wake_hit, wash_hit)
+                # 易碎/需支撑的方块：本分区普通方块铺完后再写（见 _step_frail）
+                frail_hit = False
+                if not any(kw in low for kw in cfg.FRAGILE_KEEP_FIRST):
+                    for kw in cfg.FRAGILE_HINTS:
+                        if kw in low:
+                            frail_hit = True
+                            break
+                flags[nm] = (nm in cfg.LIQUID_BLOCKS, wake_hit, wash_hit,
+                             frail_hit)
             st["flags"] = flags
         flags = st["flags"]
-        no_flag = (False, False, False)
+        no_flag = (False, False, False, False)
         t0 = time.time()
         budget = cfg.PREP_SLICE_MS
         cur = st["cursor"]
         while cur < n:
             x, y, z, name, aux, states = blocks[cur]
-            is_liq, wake_hit, wash_hit = flags.get(name, no_flag)
+            is_liq, wake_hit, wash_hit, frail_hit = flags.get(name, no_flag)
             if is_liq:
                 liq.append(cur)              # 液体最后单独放，不进分区
             else:
                 key = (int(x) // side, int(z) // side)
                 g = groups.get(key)
                 if g is None:
-                    g = groups[key] = {"blocks": [], "wake": [], "ents": [],
-                                       "label": u"%d,%d" % key,
+                    g = groups[key] = {"blocks": [], "wake": [], "frail": [],
+                                       "ents": [], "label": u"%d,%d" % key,
                                        "bb": [x, x, y, y, z, z]}
                 else:
                     # 顺路把分区包围盒攒出来：换区时要它算 TP 落点和常加载范围。
                     # 以前是换区那一帧现遍历 1.6 万块（py2 下 5~10ms，正好卡在
                     # TP 同一帧上）；这里每块只多 6 次比较，换区变成 O(1) 查表。
-                    bb = g["bb"]
-                    if x < bb[0]:
-                        bb[0] = x
-                    elif x > bb[1]:
-                        bb[1] = x
-                    if y < bb[2]:
-                        bb[2] = y
-                    elif y > bb[3]:
-                        bb[3] = y
-                    if z < bb[4]:
-                        bb[4] = z
-                    elif z > bb[5]:
-                        bb[5] = z
-                g["blocks"].append(cur)
-                if wake_hit:
-                    # 门/铁轨这类多格方块在 flags 里已排除：带邻居更新重写会掉落
-                    g["wake"].append(cur)
-                    wake.append(cur)
-                if wash_hit:
-                    wash.append(cur)
+                    _bb_touch(g["bb"], x, y, z)
+                if frail_hit:
+                    # 台阶/栅栏/火把/藤蔓这类先落地就掉：不进第一批，
+                    # 等这个分区的普通方块全铺好再写（不是全结构最后，
+                    # 那样要为了几十块装饰把几十个分区重新 TP 一遍）
+                    g["frail"].append(cur)
+                    if wash_hit:
+                        wash.append(cur)
+                else:
+                    g["blocks"].append(cur)
+                    if wake_hit:
+                        # 门/铁轨这类多格方块在 flags 里已排除：带邻居更新重写会掉落
+                        g["wake"].append(cur)
+                        wake.append(cur)
+                    if wash_hit:
+                        wash.append(cur)
             cur += 1
             # 每 32 块探一次时间，到点收手（粒度太粗会在换区/大结构上留尖峰）
             if (cur & 31) == 0 and (time.time() - t0) * 1000.0 >= budget:
@@ -3395,8 +3534,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             key = (int(e[0]) // side, int(e[2]) // side)
             g = groups.get(key)
             if g is None:
-                g = groups[key] = {"blocks": [], "wake": [], "ents": [],
-                                   "label": u"%d,%d" % key, "bb": None}
+                g = groups[key] = {"blocks": [], "wake": [], "frail": [],
+                                   "ents": [], "label": u"%d,%d" % key,
+                                   "bb": None}
             g["ents"].append(i)
         self._prep_finish(job)
 
@@ -3441,21 +3581,29 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                             True, side)
         elif not (self.split or self.tick_mode or side > cfg.SPLIT_SIZE
                   or st.get("auto_split")):
-            # 不分区：整张结构一个分区，液体单独挑出去最后放。
-            # 没有液体时直接用 range，别为了"排除液体"把几十万个下标抄一遍：
+            # 不分区：整张结构一个分区，液体单独挑出去最后放，
+            # 易碎方块挑到最后一遍（否则整张一个区时它们根本排不到后面）。
+            # 两样都没有时直接用 range，别为了"排除"把几十万个下标抄一遍：
             # 589824 块的结构，这个列表推导实测就是一整帧 28ms（t_perf 里的尖峰）。
             liq = st["liq"]
-            if liq:
-                liqset = set(liq)
-                blk = [i for i in _range(len(blocks)) if i not in liqset]
+            frail = []
+            for _g in st["groups"].values():
+                if _g.get("frail"):
+                    frail.extend(_g["frail"])
+            if liq or frail:
+                skip = set(liq)
+                skip.update(frail)
+                blk = [i for i in _range(len(blocks)) if i not in skip]
+                skip = None
             else:
                 blk = _range(len(blocks))
-            sections = [{"blocks": blk, "wake": st["wake"],
+            sections = [{"blocks": blk, "wake": st["wake"], "frail": frail,
                          "ents": _range(len(job.entities)), "label": u"全部"}]
         else:
             keys = sorted(st["groups"].keys(), key=self._near_first_key(job, side))
             sections = [st["groups"][k] for k in keys
-                        if st["groups"][k]["blocks"] or st["groups"][k]["ents"]]
+                        if st["groups"][k]["blocks"] or st["groups"][k]["ents"]
+                        or st["groups"][k].get("frail")]
             if not sections:
                 # 整张都是水：留个空分区占位，否则流程直接结束，水永远不放
                 sections = [{"blocks": [], "wake": [], "ents": [], "label": u"全部"}]
@@ -3591,7 +3739,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.retry_pass += 1
             return
         job.retry = still
-        if sec is not None and sec["wake"]:
+        if sec is not None and sec.get("frail"):
+            job.phase = "frail"
+            job.frail_cursor = 0
+        elif sec is not None and sec["wake"]:
             job.phase = "wake"
             job.wake_cursor = 0
         elif sec is not None and sec["ents"]:
@@ -3844,7 +3995,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.sec_i += 1
         job.cursor = 0
         job.wake_cursor = 0
+        job.frail_cursor = 0
         job.ent_cursor = 0
+        job.pb_st = None          # 上一区的批量建表状态别带到这一区
+        job.pb_tag = None
         job.retry = []
         job.retry_cursor = 0
         job.item_queue = []

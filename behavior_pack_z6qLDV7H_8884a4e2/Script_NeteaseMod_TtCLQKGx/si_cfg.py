@@ -239,6 +239,37 @@ WASH_HINTS = (
     "candle", "chain", "pot", "skull", "head", "frame", "painting",
 )
 WASH_MAX_FIX = 800        # 一次导入最多补多少个被水冲掉的方块（防止无限补）
+
+# ---------------------------------------------------------------- 易碎方块后置
+# 需要支撑、占不满一格、或者多格拼装的方块，放在**分区最后**才写：
+# 它们的共同点是"写下去的那一瞬间就要判断支撑"，而支撑它们的墙/地板很可能
+# 还没轮到（批量写虽然不触发邻居更新，但引擎落块时仍会看下方和贴面）。
+# 先放它们 = 当场变掉落物；等普通方块铺完再放 = 一次到位。
+# 液体阶段的 wash 仍是最后一道兜底（水冲掉的还会补回来）。
+FRAGILE_HINTS = (
+    # 靠支撑站着的
+    "torch", "lantern", "lever", "button", "rail", "sign", "banner", "ladder",
+    "vine", "flower", "tulip", "allium", "cornflower", "dandelion", "poppy",
+    "blue_orchid", "azure_bluet", "oxeye", "lily", "rose", "sunflower", "lilac",
+    "peony", "sapling", "wheat", "carrot", "potato", "beetroot", "sugar_cane",
+    "bamboo", "coral", "seagrass", "kelp", "tripwire", "string", "carpet",
+    "snow_layer", "candle", "chain", "pot", "skull", "head", "item_frame",
+    "frame", "painting", "lily_pad", "wither_rose", "spore_blossom",
+    # 不完整方块（半格 / 带朝向 / 细柱子）
+    "slab", "stairs", "fence", "gate", "wall", "pane", "trapdoor", "door",
+    "bed", "anvil", "grindstone", "stonecutter", "lectern", "campfire",
+    "cauldron", "composter", "bell", "hopper", "brewing", "enchanting",
+    "beacon", "conduit", "piston", "observer", "daylight_detector",
+)
+# 这几类即使命中上面的关键字也留在第一批：它们带方块实体或需要和邻居一起成型，
+# 拖到最后反而容易丢内容（容器里的东西要等 ents 阶段写）。
+FRAGILE_KEEP_FIRST = (
+    "chest", "barrel", "furnace", "smoker", "blast_furnace", "dispenser",
+    "dropper", "shulker", "spawner", "beehive", "bee_nest", "jukebox",
+    "command_block", "structure_block", "jigsaw",
+    # 这俩名字里带 lantern 但是完整方块，别被关键字误伤（多写一遍纯属浪费）
+    "sea_lantern", "jack_o_lantern",
+)
 SKIP_AIR = True           # 跳过空气
 SKIP_VOID = True          # 跳过结构空位（block_indices = -1）
 
