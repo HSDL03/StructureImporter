@@ -449,6 +449,45 @@ def _bg_load(path, name, box):
         box["err"] = traceback.format_exc()
 
 
+class BlockTable(object):
+    """方块表：把 (x,y,z,name,aux,states) 从一百多万个元组压成 5 个整型数组
+
+    内存账（象牙城堡 115 万块，实测）：
+        元组列表  115万 × (96B 元组 + 3 个新 int × 28B) ≈ 200MB
+        本表      115万 × 16B(四个 array) + 调色板几百项 ≈ 20MB
+    少掉一百多万个容器对象，分代回收的扫描量和耗时跟着掉一个量级
+    （GC 尖峰正是 D 项里那个 191ms 单帧的主要嫌疑）。
+
+    对外只提供 blocks[i] -> 6 元组，长度与切片下标语义不变，
+    所以写方块、分区、校验这些路径一行都不用改。
+    只读：压缩在 _step_prep 阶段 0 边扫边建，之后不会再改。
+    """
+
+    __slots__ = ("xs", "ys", "zs", "pid", "pal", "n")
+
+    def __init__(self, xs, ys, zs, pid, pal, n):
+        self.xs = xs
+        self.ys = ys
+        self.zs = zs
+        self.pid = pid
+        self.pal = pal
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        p = self.pal[self.pid[i]]
+        return (self.xs[i], self.ys[i], self.zs[i], p[0], p[1], p[2])
+
+
+def _new_table_parts():
+    """建表用的五个容器（py2 的 array 存整数，4 字节/项）"""
+    from array import array
+    return {"xs": array("i"), "ys": array("i"), "zs": array("i"),
+            "pid": array("i"), "pal": [], "pmap": {}}
+
+
 class Job(object):
     """一次放置任务（不用 __slots__，方便热重载时整类替换）
 
@@ -490,6 +529,8 @@ class Job(object):
         self.item_trim = 0      # 因 NBT 过大/过深被裁掉数据的物品数
         self.item_bare = 0      # 引擎拒收 NBT、只放下物品本体的件数
         self.item_queue = []    # 待写入容器的物品 [(plainDict, typedDict, slot, pos)]
+        self.item_cursor = 0    # 队列游标（用索引推进，不做 pop(0)）
+        self.pb_ms = 0.0        # 调色板单块（16³）实测耗时的滑动平均，用来卡预算
         self.wake_cursor = 0
         self.blk_at = {}
         self.phase = "blocks"
@@ -628,22 +669,47 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             out[str(k)] = v
         return out
 
-    def _pb_build(self, idx, blocks):
+    def _pb_build(self, idx, blocks, st=None, budget_ms=None):
         """把分区内的块按 PALETTE_TILE³ 分桶，返回 (tiles, flat)
 
         tiles 每项 (起, 止, ox, oy, oz)，flat 是重排后的块下标。
         按 y 升序排（低层先写），上层方块的支撑先到位。
+
+        传 st 就是**分帧**模式：分桶做到一半就返回 None，进度记在 st 里，
+        下一帧接着做。16³ 的区有 1.6 万块，一次性跑完在 py2 下要 30ms，
+        正好卡在"进入分区"那一帧上（t_pal 测出来的 39ms 尖峰）。
         """
         t = int(cfg.PALETTE_TILE)
         buckets = {}
-        for i in idx:
-            b = blocks[i]
-            k = (b[0] // t, b[1] // t, b[2] // t)
-            lst = buckets.get(k)
-            if lst is None:
-                buckets[k] = [i]
-            else:
-                lst.append(i)
+        if st is None:
+            for i in idx:
+                b = blocks[i]
+                k = (b[0] // t, b[1] // t, b[2] // t)
+                lst = buckets.get(k)
+                if lst is None:
+                    buckets[k] = [i]
+                else:
+                    lst.append(i)
+        else:
+            buckets = st["buckets"]
+            i = st["i"]
+            total = len(idx)
+            t0 = time.time()
+            while i < total:
+                k = blocks[idx[i]]
+                key = (k[0] // t, k[1] // t, k[2] // t)
+                lst = buckets.get(key)
+                if lst is None:
+                    buckets[key] = [idx[i]]
+                else:
+                    lst.append(idx[i])
+                i += 1
+                if (i & 255) == 0 and budget_ms and \
+                        (time.time() - t0) * 1000.0 >= budget_ms:
+                    break
+            st["i"] = i
+            if i < total:
+                return None                     # 还没分完，下一帧继续
         tiles = []
         flat = []
         for k in sorted(buckets, key=lambda q: (q[1], q[0], q[2])):
@@ -701,7 +767,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             return
         blocks = job.blocks
         if getattr(job, "pb_sec", None) is not sec:
-            job.pb_tiles, job.pb_flat = self._pb_build(sec["blocks"], blocks)
+            # 分帧建表：1.6 万块的区分桶+排序要 30ms，不能压在这一帧上
+            bst = getattr(job, "pb_st", None)
+            if bst is None or bst.get("sec") is not sec:
+                bst = {"buckets": {}, "i": 0, "sec": sec}
+                job.pb_st = bst
+            built = self._pb_build(sec["blocks"], blocks, bst,
+                                   float(cfg.PREP_SLICE_MS))
+            if built is None:
+                return                       # 还没分完，这一帧就先不写
+            job.pb_tiles, job.pb_flat = built
+            job.pb_st = None
             job.pb_sec = sec
             job.pb_i = 0
         tiles = job.pb_tiles
@@ -709,9 +785,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         budget = self._write_budget()
         t0 = time.time()
         n = 0
+        # 单块（16³）实测耗时的滑动平均：写之前先算"再写一块会不会超预算"。
+        # 以前是写完再检查时间，8ms 一块、预算 12ms，检查时必然还没超 -> 又写一块
+        # -> 一 tick 花掉 16~24ms，预算形同虚设，帧率就是这么掉的。
+        est = getattr(job, "pb_ms", 0.0) or 8.0
+        cap = int(cfg.PALETTE_CELLS)
         while job.pb_i < len(tiles):
+            if n >= cap:
+                break
+            spent = (time.time() - t0) * 1000.0
+            if n and spent + est > budget:
+                break                      # 再来一块就超了，留给下一 tick
             st, en, ox, oy, oz = tiles[job.pb_i]
             cnt = en - st
+            _w0 = time.time()
             if self._pb_write(job, comp, blocks, flat, st, en, ox, oy, oz):
                 job.ok += cnt
             else:
@@ -719,12 +806,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 job.retry.extend(flat[st:en])   # 整块退回逐块重写
                 if job.err is None:
                     job.err = u"批量写入返回失败（区块未加载？）"
+            dt = (time.time() - _w0) * 1000.0
+            est = est * 0.7 + dt * 0.3
             job.pb_i += 1
             n += 1
-            if n >= int(cfg.PALETTE_CELLS):
-                break
-            if (time.time() - t0) * 1000.0 >= budget:
-                break
+        job.pb_ms = est
         if job.pb_i < len(tiles):
             return
         job.pb_tiles = None
@@ -1188,6 +1274,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if self.job is not None:
                 self._clear_areas(self.job)
             self.job = None
+            self._gc_restore()
             self._bg = None            # 后台解析结果直接丢弃（线程跑完自然退出）
             self._pj = None            # 分帧解析同样直接丢弃
             if self.map_queue:
@@ -1950,6 +2037,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if data.count > cfg.MAX_BLOCKS:
             self.tell(pid, u"§c结构太大：%d 方块（上限 %d）" % (data.count, cfg.MAX_BLOCKS))
             return
+        self._gc_relax()
 
         # 分块模式只在玩家手动开时才用。
         # 以前"超过 15 万块自动开分块"，结果把已经按体量放大好的 128 格分区
@@ -2883,7 +2971,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._mfix_cd = getattr(self, "_mfix_cd", 0) - 1
         if self._mfix_cd > 0:
             return
-        self._mfix_cd = 40
+        # 每 10 秒看一次就够：这只是"lang 没生效时补物品名"的兜底，
+        # 以前 2 秒一次，导入过程中每 40 tick 就摸一遍全背包（GetPlayerAllItems
+        # 是整包序列化，玩家背包塞满时这一下就能看出顿感）。
+        self._mfix_cd = 200
         if getattr(self, "_mfix_fail", 0) >= 3:
             return
         try:
@@ -2950,6 +3041,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             util.log(u"tick 异常\n" + util.u(tb))
             self._clear_areas(job)
             self.job = None
+            self._gc_restore()
             self.tp_route = None
             self._freeze_off()
             self._tip_raw(u"")
@@ -2961,6 +3053,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         comp = self._blocks()
         if comp is None:
             self.job = None
+            self._gc_restore()
             self._freeze_off()
             self.tell(job.pid, u"§c取不到方块组件（CreateBlockInfo 返回空）")
             self.push(job.pid, self._page)
@@ -3130,19 +3223,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 hist = st["hist"] = {}
                 st["names"] = set()
                 st["n0"] = n
-                st["w"] = 0
                 st["skipn"] = 0
                 st["blk_at"] = {}
+                # 边扫边建表：不再把 6 元组写回 list（那等于多留一份上百万元的清单），
+                # 直接塞进四个整型数组 + 一张几百项的调色板
+                st["parts"] = _new_table_parts()
             names = st["names"]
             ent_pos = getattr(job, "ent_pos", None)
             bat = st["blk_at"]
+            parts = st["parts"]
+            xs = parts["xs"]
+            ys = parts["ys"]
+            zs = parts["zs"]
+            pid = parts["pid"]
+            pal = parts["pal"]
+            pmap = parts["pmap"]
             cache = st.get("aux_cache")
             if cache is None:
                 cache = st["aux_cache"] = {}
             alias_map = cfg.BLOCK_ALIAS
             skip_set = cfg.SKIP_BLOCKS
             n0 = st["n0"]
-            w = st["w"]
             skipn = st["skipn"]
             cur = st["cursor"]
             t0 = time.time()
@@ -3173,8 +3274,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                         cache[ck] = (states, aux)
                 else:
                     aux = 0
-                blocks[w] = (x, y, z, name, aux, states)
-                w += 1
+                pk = (name, aux, id(states))
+                p = pmap.get(pk)
+                if p is None:
+                    p = len(pal)
+                    pal.append((name, aux, states))
+                    pmap[pk] = p
+                pid.append(p)
+                xs.append(x)
+                ys.append(y)
+                zs.append(z)
                 if ent_pos is not None:
                     # 有方块实体时顺路记下"这个坐标原本是什么方块"，
                     # 写实体后要拿它核对/还原；只记命中的那几十个坐标
@@ -3185,18 +3294,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 hist[k] = hist.get(k, 0) + 1
                 names.add(name)
                 cur += 1
-                if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= cfg.PREP_SLICE_MS:
+                # 每 32 块探一次（原来 256）：states 转 aux 要调引擎，个别块能到
+                # 0.1ms 级，256 块才发现超时就是一帧 25ms 的尖峰
+                if (cur & 31) == 0 and (time.time() - t0) * 1000.0 >= cfg.PREP_SLICE_MS:
                     break
             st["cursor"] = cur
-            st["w"] = w
             st["skipn"] = skipn
             if cur < n0:
                 return
-            del blocks[w:]              # 截掉尾部残留，列表里只剩有效块
             st["auxed"] = True
             st["cursor"] = 0
             st["n0"] = None
             st["aux_cache"] = None
+            st["parts"] = None
+            job.blocks = BlockTable(xs, ys, zs, pid, pal, len(pid))
             self._skipped = skipn
             if cfg.SPLIT_AUTO and not (int(getattr(self, "split_size", 0) or 0) > 0):
                 side, need = self._decide_side(hist)
@@ -3244,7 +3355,25 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 g = groups.get(key)
                 if g is None:
                     g = groups[key] = {"blocks": [], "wake": [], "ents": [],
-                                       "label": u"%d,%d" % key}
+                                       "label": u"%d,%d" % key,
+                                       "bb": [x, x, y, y, z, z]}
+                else:
+                    # 顺路把分区包围盒攒出来：换区时要它算 TP 落点和常加载范围。
+                    # 以前是换区那一帧现遍历 1.6 万块（py2 下 5~10ms，正好卡在
+                    # TP 同一帧上）；这里每块只多 6 次比较，换区变成 O(1) 查表。
+                    bb = g["bb"]
+                    if x < bb[0]:
+                        bb[0] = x
+                    elif x > bb[1]:
+                        bb[1] = x
+                    if y < bb[2]:
+                        bb[2] = y
+                    elif y > bb[3]:
+                        bb[3] = y
+                    if z < bb[4]:
+                        bb[4] = z
+                    elif z > bb[5]:
+                        bb[5] = z
                 g["blocks"].append(cur)
                 if wake_hit:
                     # 门/铁轨这类多格方块在 flags 里已排除：带邻居更新重写会掉落
@@ -3253,8 +3382,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 if wash_hit:
                     wash.append(cur)
             cur += 1
-            # 每 256 块探一次时间，到点收手
-            if (cur & 255) == 0 and (time.time() - t0) * 1000.0 >= budget:
+            # 每 32 块探一次时间，到点收手（粒度太粗会在换区/大结构上留尖峰）
+            if (cur & 31) == 0 and (time.time() - t0) * 1000.0 >= budget:
                 break
         st["cursor"] = cur
         if cur < n:
@@ -3267,9 +3396,31 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             g = groups.get(key)
             if g is None:
                 g = groups[key] = {"blocks": [], "wake": [], "ents": [],
-                                   "label": u"%d,%d" % key}
+                                   "label": u"%d,%d" % key, "bb": None}
             g["ents"].append(i)
         self._prep_finish(job)
+
+    def _near_first_key(self, job, side):
+        """分区排序键：离玩家近的先导
+
+        以前按 (x, z) 字典序从角落扫起 —— 第一区永远在结构最远的那一头，
+        开局必吃一次传送 + 区块等待，玩家盯着屏幕什么也看不到。
+        结构是以玩家为中心放的（base 已经减掉 size/2），所以改成按到玩家的
+        距离排序（自然形成螺旋）：前几个区就在脚下，区块本来就加载着，
+        开局零等待，第一眼就能看见东西长出来。
+        """
+        try:
+            p = self.factory.CreatePos(job.pid).GetFootPos()
+            px = float(p[0]) - job.base[0]
+            pz = float(p[2]) - job.base[2]
+        except Exception:
+            px = pz = None
+        half = side / 2.0
+        if px is None:
+            # 拿不到坐标就退回"从中心往外"的等价写法（结构中心在 size/2）
+            return lambda k: (abs(k[0]), abs(k[1]), k[0], k[1])
+        return lambda k: ((k[0] * side + half - px) ** 2 +
+                          (k[1] * side + half - pz) ** 2)
 
     def _prep_finish(self, job):
         """扫描完成后把分区定下来（这一步只剩排序，几十毫秒内）"""
@@ -3290,13 +3441,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                                             True, side)
         elif not (self.split or self.tick_mode or side > cfg.SPLIT_SIZE
                   or st.get("auto_split")):
-            # 不分区：整张结构一个分区，液体单独挑出去最后放
-            liqset = set(st["liq"])
-            blk = [i for i in _range(len(blocks)) if i not in liqset]
+            # 不分区：整张结构一个分区，液体单独挑出去最后放。
+            # 没有液体时直接用 range，别为了"排除液体"把几十万个下标抄一遍：
+            # 589824 块的结构，这个列表推导实测就是一整帧 28ms（t_perf 里的尖峰）。
+            liq = st["liq"]
+            if liq:
+                liqset = set(liq)
+                blk = [i for i in _range(len(blocks)) if i not in liqset]
+            else:
+                blk = _range(len(blocks))
             sections = [{"blocks": blk, "wake": st["wake"],
                          "ents": _range(len(job.entities)), "label": u"全部"}]
         else:
-            keys = sorted(st["groups"].keys())
+            keys = sorted(st["groups"].keys(), key=self._near_first_key(job, side))
             sections = [st["groups"][k] for k in keys
                         if st["groups"][k]["blocks"] or st["groups"][k]["ents"]]
             if not sections:
@@ -3474,13 +3631,19 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         comp = self._items()
         if comp is None:
             job.item_queue = []
+            job.item_cursor = 0
             self._next_section(job)
             return
         dim = job.dim
         budget = self._write_budget()
         t0 = time.time()
-        while job.item_queue:
-            plain, typed, slot, pos = job.item_queue[0]
+        # 用游标推进，不再 pop(0)：list.pop(0) 要把整个列表往前搬一遍，
+        # 盒中盒那种几千件的容器是 O(n²)，越到后面每件越慢（真机导入后期发滞）。
+        q = job.item_queue
+        qn = len(q)
+        cur = int(getattr(job, "item_cursor", 0) or 0)
+        while cur < qn:
+            plain, typed, slot, pos = q[cur]
             has_ud = isinstance(plain.get("userData"), dict) and bool(plain["userData"])
 
             # 核对键以 typed（原样 NBT）为准：它才是"完整写入"的那份
@@ -3541,10 +3704,13 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 job.item_ok += 1
             else:
                 job.item_fail += 1
-            job.item_queue.pop(0)
+            cur += 1
             # 单件就可能吃掉整个预算，至少保证每 tick 推进一件
-            if (time.time() - t0) * 1000.0 >= budget and job.item_queue:
+            if (time.time() - t0) * 1000.0 >= budget and cur < qn:
+                job.item_cursor = cur
                 return
+        job.item_queue = []
+        job.item_cursor = 0
         self._next_section(job)
 
     def _item_ud_ok(self, comp, pos, slot, dim, want_keys=None):
@@ -3593,10 +3759,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         n = 0
         bx, by, bz = job.base
         dim = job.dim
-        while job.ent_cursor < total and n < cfg.BATCH_ENT:
+        # 每块要 3~4 次引擎调用（读实体数据 / 写实体数据 / 核对方块 / 命令方块），
+        # 固定 200 块/tick 在密集仓库区能顶到上百毫秒。改成时间预算：
+        # 到点就收手，剩下的下一 tick 接着写，一个方块都不会丢。
+        budget = float(getattr(cfg, "ENT_SLICE_MS", 6.0))
+        cap = int(getattr(cfg, "BATCH_ENT_CAP", cfg.BATCH_ENT))
+        t0 = time.time()
+        while job.ent_cursor < total and n < cap:
             x, y, z, nbt = job.entities[idx[job.ent_cursor]]
             job.ent_cursor += 1
             n += 1
+            if (n & 3) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
             pos = (bx + x, by + y, bz + z)
             data = dict(nbt)
             for key in ("x", "y", "z"):
@@ -3644,6 +3818,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if job.ent_cursor >= total:
             if job.item_queue:
                 job.phase = "items"      # 单独一阶段，按时间预算分摊到多个 tick
+                job.item_cursor = 0
             else:
                 self._next_section(job)
 
@@ -3673,6 +3848,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.retry = []
         job.retry_cursor = 0
         job.item_queue = []
+        job.item_cursor = 0
         if job.sec_i >= len(job.sections):
             # 所有分区跑完 -> 实体 -> 液体 -> 守水 -> 收尾
             self._final_phase(job)
@@ -3951,7 +4127,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 cur = comp.GetBlockNew(pos, dim)
             except Exception:
                 cur = None
-            if cur and cur.get("name") == name:
+            if cur is None:
+                pass                             # 区块没加载，读不到不等于被水冲掉了
+            elif cur.get("name") == name:
                 pass                             # 还在，什么都别做
             elif job.wash_fixed < cfg.WASH_MAX_FIX:
                 blk = {"name": name, "aux": int(aux)}
@@ -3995,6 +4173,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             ent = items[i]
             job.seal_cursor = (i + 1) % n
             done += 1
+            # 巡检大半是"读一下、对上了、跳过"，以前只在补写时查时间，
+            # 顺风的时候会一口气读满 600 格（几毫秒到十几毫秒）—— 这里也收口
+            if (done & 31) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
             if ent[2] >= cfg.FREEZE_MAX_FIX:
                 continue
             pos = ent[0]
@@ -4003,7 +4185,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 cur = comp.GetBlockNew(pos, job.dim)
             except Exception:
                 cur = None
-            if cur and cur.get("name") == blk["name"]:
+            if cur is None:
+                # 区块没加载：读不到不等于"被改掉"，别白耗补写次数
+                continue
+            if cur.get("name") == blk["name"]:
                 # 只比方块名，不比 aux：引擎会把水的 liquid_depth 规范化成自己的值，
                 # 拿算出来的 aux 去比对会一直判"不对"，然后又变成无脑重写。
                 continue                       # 还是那格水，别碰它
@@ -4032,6 +4217,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         每换一区就白扔十几毫秒（在换区那一帧里，正好卡在主线程上）。
         """
         bx, by, bz = job.base
+        # 分区包围盒在扫描时就攒好了（见 _step_prep 阶段 1），这里直接查表。
+        # 回退路径保留：分块模式/不分区建出来的 section 没有 bb。
+        bb = sec.get("bb")
+        if bb:
+            return (bx + bb[0], by + bb[2], bz + bb[4],
+                    bx + bb[1], by + bb[3], bz + bb[5])
         idx = sec["blocks"]
         if not idx:
             return (bx, by, bz, bx, by, bz)
@@ -4482,7 +4673,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         low = cmd.strip().lower()
         if (mode == CMD_BLOCK_MODE.get("minecraft:repeating_command_block")
                 and rmode == 0 and low.split(" ")[0].lstrip("/") in
-                ("tellraw", "title", "say", "me") and cmd not in self.replay_cmds):
+                ("tellraw", "title", "say", "me") and cmd not in self.replay_cmds
+                and len(self.replay_cmds) < int(cfg.REPLAY_MAX)):
             self.replay_cmds.append(cmd)
 
     def _step_wake(self, job, comp):
@@ -4518,8 +4710,36 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             else:
                 self._next_section(job)
 
+    # ------------------------------------------------------------ GC 节流
+    def _gc_relax(self):
+        """导入期间放宽 GC 阈值
+
+        一百多万块的结构会在堆上留几百万个对象（每块一个 6 元组 + states dict），
+        默认阈值(700,10,10)下分代回收隔几秒就全量扫一遍，实测象牙城堡导入的
+        第 339 帧被扫掉 216ms —— 玩家看到的就是"突然卡住不动"。
+        把第 0 代阈值抬到 2 万，扫描频率降一个数量级，收尾立刻恢复原值。
+        """
+        try:
+            import gc
+            if not getattr(self, "_gc_saved", None):
+                self._gc_saved = gc.get_threshold()
+                gc.set_threshold(20000, 50, 50)
+        except Exception:
+            pass
+
+    def _gc_restore(self):
+        try:
+            import gc
+            saved = getattr(self, "_gc_saved", None)
+            if saved:
+                gc.set_threshold(*saved)
+                self._gc_saved = None
+        except Exception:
+            pass
+
     def _finish(self, job):
         self.job = None
+        self._gc_restore()
         self.tp_route = None
         self._clear_areas(job)
         self._freeze_off()          # 恢复导入期间按住的游戏规则（随机刻/昼夜/天气）

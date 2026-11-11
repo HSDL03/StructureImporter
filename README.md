@@ -14,8 +14,8 @@
 <p align="center">
 	<a href="https://github.com/HSDL03/StructureImporter/releases">
 		<img
-			src="https://img.shields.io/badge/version-0.0.5-brightgreen.svg"
-			alt="Version: 0.0.5"
+			src="https://img.shields.io/badge/version-0.0.6-brightgreen.svg"
+			alt="Version: 0.0.6"
 		/>
 	</a>
 	<a href="https://opensource.org/license/mit">
@@ -91,7 +91,7 @@
 
 **方式一：直接用发布包（推荐）**
 
-1. 到 [Releases](https://github.com/HSDL03/StructureImporter/releases) 下载最新的 `StructureImporter_v0.0.5.zip` 并解压
+1. 到 [Releases](https://github.com/HSDL03/StructureImporter/releases) 下载最新的 `StructureImporter_v0.0.6.zip` 并解压
 2. 把解压出的行为包、资源包目录连同 `world_behavior_packs.json`、`world_resource_packs.json` 放进你的开发世界目录（或用 MC Studio 打开）
 3. 进入世界，聊天框输入 `/structureim ui` 验证 MOD 已生效
 
@@ -190,6 +190,15 @@ A: 请更新到最新版本。旧版存在挂框数据格式与镜像 bug。
 A: 请在 [Issues](https://github.com/HSDL03/StructureImporter/issues) 页面提交详细报告。
 
 ## 更新日志
+
+**0.0.6**
+- 方块表调色板化：百万块结构的方块数据从元组列表改成整型数组 + 调色板，内存约 200MB → 20MB（象牙城堡 115 万块实测）
+- 分区顺序改为「离玩家由近到远」：开局不再从最远角落开始，前几个分区就在脚下，零等待
+- 分区包围盒在扫描时顺手算好，换区不再现遍历上万块
+- 导入期间放宽 GC 阈值并在收尾恢复，消除 200ms 级的单帧停顿
+- 方块实体写入、调色板批量写入全部改成按时间预算收口（原来每个 tick 固定写一批，密集仓库能顶到上百毫秒）
+- 容器物品写入由 `pop(0)` 改成游标推进（几千件盒中盒不再越写越慢）
+- 包体积 198KB → 143KB：图标重压缩（45KB → 8.8KB）、UI 布局 JSON 去空白、去掉本地缓存与模板说明
 
 **0.0.5**
 - 方块写入改用引擎调色板批量通道，实测约 40 倍加速（霜塔 35986 块 7.7s）
