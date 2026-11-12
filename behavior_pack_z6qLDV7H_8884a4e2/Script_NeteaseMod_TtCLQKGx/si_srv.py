@@ -399,9 +399,11 @@ HELP = [
     u"§f/structureim mapspeed <0-2> §7地图画速度：0稳(默认) 1快 2极速",
     u"§f/structureim maparea <square|circle> §7地图常加载形状（方形默认；报命令错就切 circle）",
     u"§f/structureim bigwait <1-30> §7跨行远传后降速秒数（默认4）",
-    u"§f/structureim budget <2-25> §7每tick写入预算ms（默认12，越大越快越卡；急速自动翻倍）",
+    u"§f/structureim budget <2-25> §7每tick写入预算ms（会被节奏档压住，默认 6）",
+    u"§f/structureim pace <稳|均衡|快> §7导入节奏：6/8/12 ms 每 tick（默认稳，最不掉帧）",
+    u"§f/structureim mobs <开|关> §7是否导入结构里的生物 / 船 / 矿车 / 掉落物（默认开）",
     u"§f/structureim fast §7一键提速（后台解析 + 邻区并行 + 急速 + 满预算）",
-    u"§f/structureim preset <稳|均衡|极速> §7一键套用整套参数（128图120秒选极速）",
+    u"§f/structureim preset <稳|均衡|绝对稳定> §7一键套用整套参数（不传送玩家选绝对稳定）",
     u"§f/structureim verify <开|关> §7导完逐块回读，只报差多少块（不补写，默认关）",
     u"§f/structureim splitz <0|16-128> §7分区边长：0=自动，16-128=自定义",
     u"§f/structureim ta <开|关> §7纯常加载：整张结构挂 tickingarea，人不跟着 TP",
@@ -523,6 +525,9 @@ class Job(object):
         self.mob_cursor = 0
         self.mob_ok = 0
         self.mob_fail = 0
+        self.mob_eids = {}       # UniqueID -> entityId（乘客靠它找主人）
+        self.mob_defer = []      # 主人还没刷出来的乘客，第二遍补
+        self.mob_riders = 0      # 成功骑上去的乘客数
         self.sections = sections or [{"blocks": range(len(blocks)),
                                       "wake": [], "ents": [], "label": u"全部"}]
         self.side = cfg.SPLIT_SIZE      # 本次分区的实际边长（_pick_split_size 会覆盖）
@@ -560,6 +565,8 @@ class Job(object):
         self.tp_wait = 0          # 本分区刚 TP 过 -> 强制等区块加载
         self.areas = []          # 已创建的 /tickingarea 名字，收尾时逐个移除
         self.ta_ok = False       # 本任务真的挂上常加载了才不跟随 TP
+        self.ta_roll = False     # True = 大结构，按分区滚动挂常加载（同时只占几个名额）
+        self.ta_sec_areas = []   # 滚动挂载里"当前分区"挂的那几个名字
         # 暂停 / 速度统计
         self.paused = False
         self.work_ticks = 0      # 实际干活的 tick 数（暂停和等区块不算），算速度用
@@ -568,6 +575,9 @@ class Job(object):
         self.retry = []
         self.retry_cursor = 0
         self.retry_pass = 0
+        self.hard_round = 0      # 本区"重挂常加载硬补"已经用了几轮（绝对稳定模式）
+        self.sec_leftover = 0    # 硬补也补不上的块数（结算时如实报出来）
+        self.cover_key = None    # 液体/补水阶段当前挂着的那一格常加载（TA_MAX_SIDE 网格）
         # 写入节流：每 tick 可写的块数（按实测吞吐自适应，越跑越贴机器）
         self.batch = min(cfg.BATCH, cfg.WRITE_BATCH_START)
         self.probe = cfg.WRITE_PROBE_STEP      # 多少块探一次时间（按单块耗时自动收紧）
@@ -615,6 +625,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zones_n = 3                    # 每幅图实际巡几个区（1~9，可 /structureim znum 调）
         self.big_wait = cfg.TP_BIG_WAIT / 20.0   # 跨行远传后降速秒数（/structureim bigwait 调）
         self.budget = cfg.WRITE_BUDGET_MS        # 每 tick 写方块的时间预算（ms，/structureim budget 调）
+        self.stable = cfg.STABLE_DEFAULT         # 稳定优先：预算/批量封顶，宁可慢也不掉帧
+        self.pace = cfg.PACE_DEFAULT             # 导入节奏：safe / balance / fast
+        self.mobs_on = True                      # 是否导入结构里的生物/船/矿车
         self.threads = cfg.THREADS_DEFAULT       # 多线程：>=2 时结构解析走后台线程
         self.parallel = cfg.PARALLEL_DEFAULT     # 相邻分区并行：提前加载几个邻区
         self.nbt_limit = cfg.ITEM_NBT_MAX_KB     # 物品 NBT 上限（0=不裁剪）
@@ -1162,6 +1175,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.zones_n = 3
         self.big_wait = cfg.TP_BIG_WAIT / 20.0
         self.budget = cfg.WRITE_BUDGET_MS
+        self.stable = cfg.STABLE_DEFAULT
+        self.pace = cfg.PACE_DEFAULT
+        self.mobs_on = True
         self.threads = cfg.THREADS_DEFAULT
         self.parallel = cfg.PARALLEL_DEFAULT
         self.nbt_limit = cfg.ITEM_NBT_MAX_KB
@@ -1173,6 +1189,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self._cfg_ver = 0                        # 存档里的配置版本（用于一次性迁移）
         self.map_speed = cfg.MAP_SPEED_DEFAULT   # 地图画速度档：0 稳 / 1 快 / 2 极速
         self.ta_mode = cfg.TA_MODE_DEFAULT       # 纯常加载：不跟随 TP，全结构挂 tickingarea
+        self.no_tp = False                       # 绝对稳定预设：任何情况下都不传送玩家
         self.verify = cfg.VERIFY_DEFAULT         # 收尾逐块回读校验（不漏块）
         self._guard_scale = 1.0                  # 单 tick 超时后自动降速的系数
         self.map_area = cfg.MAP_AREA_SQUARE      # 常加载形状：True 方形（盖满）/ False 圆形（老写法，兼容用）
@@ -1268,6 +1285,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     self.map_area = util.u(raw.get("maparea")) != u"0"
                 if raw.get("ta") is not None:
                     self.ta_mode = util.u(raw.get("ta")) == u"1"
+                if raw.get("notp") is not None:
+                    self.no_tp = util.u(raw.get("notp")) == u"1"
+                if raw.get("stable") is not None:
+                    self.stable = util.u(raw.get("stable")) != u"0"
+                if raw.get("pace") is not None:
+                    try:
+                        i = int(util.u(raw.get("pace")))
+                        self.pace = cfg.PACE_ORDER[max(0, min(2, i))]
+                    except (TypeError, ValueError):
+                        pass
+                if raw.get("mobs") is not None:
+                    self.mobs_on = util.u(raw.get("mobs")) != u"0"
                 if raw.get("verify") is not None:
                     self.verify = util.u(raw.get("verify")) != u"0"
             elif raw:
@@ -1303,6 +1332,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                  "mapspeed": util.b(str(self.map_speed)),
                  "maparea": util.b(u"1" if self.map_area else u"0"),
                  "ta": util.b(u"1" if self.ta_mode else u"0"),
+                 "notp": util.b(u"1" if self.no_tp else u"0"),
+                 "stable": util.b(u"1" if getattr(self, "stable", True) else u"0"),
+                 "pace": util.b(u"%d" % self._pace_index()),
+                 "mobs": util.b(u"1" if getattr(self, "mobs_on", True) else u"0"),
                  "verify": util.b(u"1" if self.verify else u"0"),
                  "cfgver": util.b(str(cfg.CFG_VERSION)),
                  "nbtlimit": util.b(str(self.nbt_limit))})
@@ -1449,6 +1482,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.cmd_maparea(pid, a1)
         elif action == u"turbo":
             self.cmd_turbo(pid, a1)
+        elif action in (u"pace", u"speed", u"节奏"):
+            self.cmd_pace(pid, a1)
+        elif action in (u"stable", u"steady"):
+            self.cmd_stable(pid, a1)
         elif action in (u"preset", u"pre", u"tier"):
             self.cmd_preset(pid, a1)
         elif action in (u"verify", u"check"):
@@ -1516,19 +1553,21 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§7%d. §f%s" % (i + 1, util.short(lib.entries[i].rel, 40)))
 
     def cmd_preset(self, pid, text):
-        """一键预设：稳 / 均衡 / 极速（一次改完一整组参数并落盘）"""
+        """一键预设：稳 / 均衡 / 绝对稳定（一次改完一整组参数并落盘）"""
         raw = (text or u"").strip().lower()
         alias = {u"稳": "safe", u"安全": "safe", u"safe": "safe", u"1": "safe",
                  u"均衡": "balance", u"平衡": "balance", u"balance": "balance",
                  u"2": "balance",
-                 u"极速": "turbo", u"快": "turbo", u"turbo": "turbo",
-                 u"3": "turbo"}
+                 u"绝对稳定": "stable", u"稳定": "stable", u"stable": "stable",
+                 u"3": "stable",
+                 # 老名字（极速/急速）保留下来，等价于现在的绝对稳定
+                 u"极速": "stable", u"急速": "stable", u"turbo": "stable"}
         name = alias.get(raw, raw)
         pack = cfg.PRESETS.get(name)
         if not pack:
             cur = u" / ".join(u"%s=%s" % (k, cfg.PRESET_LABELS.get(k, k))
-                              for k in ("safe", "balance", "turbo"))
-            self.tell(pid, u"§e用法：/structureim preset <稳|均衡|极速> §7（%s）" % cur)
+                              for k in ("safe", "balance", "stable"))
+            self.tell(pid, u"§e用法：/structureim preset <稳|均衡|绝对稳定> §7（%s）" % cur)
             return
         self.turbo = bool(pack["turbo"])
         self.budget = float(pack["budget"])
@@ -1537,15 +1576,27 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.verify = bool(pack["verify"])
         self.map_speed = max(0, min(2, int(pack["mapspeed"])))
         self.split_size = max(0, min(int(cfg.SPLIT_SIZE_MAX), int(pack["splitz"])))
+        # 纯常加载 / 不传送是预设的一部分：绝对稳定 = 两者都开
+        self.ta_mode = bool(pack.get("ta", 0))
+        self.no_tp = bool(pack.get("notp", 0))
+        pace = pack.get("pace")
+        if pace in cfg.PACES:
+            self.pace = pace
+            self.stable = (pace != "fast")
         self._save()
-        self.tell(pid, u"§a已套用预设：§f%s §7（急速 %s · 预算 %d ms · 线程 %d · 并行 %d · "
-                       u"地图 %s · 分区 %s · 回读校验 %s）" %
+        self.tell(pid, u"§a已套用预设：§f%s §7（纯常加载 %s · 传送玩家 %s · 预算 %d ms · "
+                       u"线程 %d · 并行 %d · 地图 %s · 分区 %s · 回读校验 %s）" %
                   (cfg.PRESET_LABELS.get(name, name),
-                   u"开" if self.turbo else u"关", int(self.budget), self.threads,
+                   u"开" if self.ta_mode else u"关",
+                   u"§c关§7" if self.no_tp else u"开",
+                   int(self.budget), self.threads,
                    self.parallel,
                    [u"稳", u"快", u"极速"][self.map_speed],
                    u"自动" if not self.split_size else u"%d 格" % self.split_size,
                    u"开" if self.verify else u"关"))
+        if self.no_tp:
+            self.tell(pid, u"§7绝对稳定：全程不移动你，区块靠常加载拉起；"
+                           u"每区失败块重挂常加载硬补，收尾把所有 si_ 常加载删干净")
         self.push(pid, self._page)
 
     def cmd_verify(self, pid, text):
@@ -1775,12 +1826,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(pid, u"§c拿不到命令组件，清理失败")
             return
         prefix = cfg.AREA_PREFIX
-        names = []
-        for i in _range(max(1, int(cfg.TA_MAX_AREAS))):
-            names.append(u"%sta_%d" % (prefix, i))
-        for i in _range(64):
-            names.append(u"%spf_%d" % (prefix, i))
-            names.append(u"%smap_%d" % (prefix, i))
+        names = self._area_slots(with_map=True)
         n = 0
         for nm in names:
             try:
@@ -1814,6 +1860,49 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         else:
             self.tell(pid, u"§a急速模式：§f关")
 
+    def cmd_pace(self, pid, text):
+        """导入节奏：稳 / 均衡 / 快
+
+        只改"每 tick 干多少活"，不改导入顺序，也不影响是否漏块：
+          稳   6ms / 400 块 / 生物 4 只 —— 基本看不出掉帧（默认）
+          均衡 8ms / 800 块 / 6 只
+          快   12ms / 1500 块 / 10 只
+        """
+        raw = (text or u"").strip().lower()
+        alias = {u"稳": "safe", u"safe": "safe", u"0": "safe", u"安全": "safe",
+                 u"均衡": "balance", u"balance": "balance", u"1": "balance",
+                 u"平衡": "balance",
+                 u"快": "fast", u"fast": "fast", u"2": "fast", u"极速": "fast"}
+        if not raw:
+            idx = self._pace_index()
+            self.tell(pid, u"§a当前节奏：§f%s §7（%d ms/tick · %d 块/tick · 生物 %d 只/tick）"
+                      % (cfg.PACE_LABELS[idx], int(self._pace()["budget"]),
+                         int(self._pace()["blocks"]), int(self._pace()["mob"])))
+            self.tell(pid, u"§7用法：/structureim pace <稳|均衡|快>")
+            return
+        name = alias.get(raw)
+        if not name:
+            self.tell(pid, u"§e用法：/structureim pace <稳|均衡|快>")
+            return
+        self.pace = name
+        self.stable = (name != "fast")
+        self._save()
+        p = cfg.PACES[name]
+        self.tell(pid, u"§a导入节奏：§f%s §7（%d ms/tick · %d 块/tick · 生物 %d 只/tick）"
+                  % (cfg.PACE_LABELS[cfg.PACE_ORDER.index(name)],
+                     int(p["budget"]), int(p["blocks"]), int(p["mob"])))
+
+    def cmd_stable(self, pid, text):
+        """兼容老命令：stable on = 节奏「稳」，off = 「快」"""
+        t = (text or u"").strip().lower()
+        if t in (u"on", u"1", u"开", u"true"):
+            self.cmd_pace(pid, u"稳")
+        elif t in (u"off", u"0", u"关", u"false"):
+            self.cmd_pace(pid, u"快")
+        else:
+            self.tell(pid, u"§e/structureim stable <on|off> 已并入 §f/structureim pace <稳|均衡|快> §7当前 %s"
+                      % cfg.PACE_LABELS[self._pace_index()])
+
     def cmd_fast(self, pid, text):
         """一键提速：后台解析 + 急速 + 满预算 + 邻区并行
 
@@ -1835,6 +1924,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         self.tell(pid, u"§a已切到提速组合：§f线程 %d · 邻区并行 %d · 急速 · 预算 %.0f ms · 地图极速 · 分区 %d 格" %
                   (self.threads, self.parallel, self.budget, self.split_size))
         self.tell(pid, u"§7回读核对默认关（只信写入返回值）；想点数可 /structureim verify on")
+        if getattr(self, "stable", True):
+            self.tell(pid, u"§e稳定优先还开着：预算会被压在 %.0f ms、单 tick 最多 %d 块。"
+                           u"要真的全速跑，先 §f/structureim stable off" %
+                      (cfg.STABLE_BUDGET_MS, int(cfg.STABLE_BATCH_CAP)))
 
     def cmd_nbtlimit(self, pid, text):
         """物品 NBT 上限：0 = 不裁剪（默认，盒中盒原样保留）"""
@@ -2221,7 +2314,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                          "groups": {}, "side": side, "use_chunk": bool(use_chunk)}
         self.job.parse_secs = float(getattr(self, "_parse_secs", 0.0) or 0.0)
         self.job.side = side
-        if self.ta_mode:
+        if self.ta_mode or self.no_tp:
+            # no_tp（绝对稳定）必然要常加载，否则不传送 + 区块没加载 = 什么都写不进去
             self._ta_cover(self.job)
         self.replay_cmds = []
         self.job.tick_enabled = self.tick_mode
@@ -2280,12 +2374,29 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         """导入完成后：算出地图网格 -> 玩家面前搭墙 -> 排队逐张 TP+give+挂框"""
         if not job.blocks or not job.pid:
             return
-        xs = [b[0] for b in job.blocks]
-        ys = [b[1] for b in job.blocks]
-        zs = [b[2] for b in job.blocks]
+        # 单循环求包围盒：以前是三次列表推导 + 三次 min/max，一百多万块的结构
+        # 光这一下就在主线程上白扫三遍（收尾时肉眼可见地顿一下）
+        blocks = job.blocks
+        b = blocks[0]
+        x0 = x1 = b[0]
+        ytop = b[1]
+        z0 = z1 = b[2]
+        for _i in _range(len(blocks)):
+            b = blocks[_i]
+            x = b[0]
+            if x < x0:
+                x0 = x
+            elif x > x1:
+                x1 = x
+            y = b[1]
+            if y > ytop:
+                ytop = y
+            z = b[2]
+            if z < z0:
+                z0 = z
+            elif z > z1:
+                z1 = z
         ms = cfg.MAP_SIZE
-        x0, x1 = min(xs), max(xs)
-        z0, z1 = min(zs), max(zs)
         cols = int(math.ceil((x1 - x0 + 1) / float(ms)))
         rows = int(math.ceil((z1 - z0 + 1) / float(ms)))
         n = cols * rows
@@ -2327,7 +2438,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             "cols": cols, "rows": rows, "frames": frames, "stage": "zone",
             "retry": 0, "dim": job.dim, "areas": [], "maps": [],
             "wall": wall_info,
-            "y": job.base[1] + max(ys) + 6.0}
+            "y": job.base[1] + ytop + 6.0}
         self._map_cd = 0
         if self.map_speed >= 1:
             speed_txt = u"§a快" if self.map_speed == 1 else u"§c极速"
@@ -2461,6 +2572,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             ok = bool(cmd.SetCommand(util.b(cmdstr)))
         except Exception:
             ok = False
+        if not ok:
+            # 名额满了（世界默认 10 个，别人也在用）：把前面几张的还回去再试一次。
+            # 地图画本来就是"一张画完换下一张"，不需要同时占着 —— 用完就删再加，
+            # 常驻 1~2 个名额就够，不存在"要 64 个常加载"这回事。
+            for j in _range(i):
+                if q["cells"][j].get("ta"):
+                    self._map_ta_del(q, j)
+            try:
+                ok = bool(cmd.SetCommand(util.b(cmdstr)))
+            except Exception:
+                ok = False
         if ok:
             cell["ta"] = name
         return ok
@@ -3277,6 +3399,22 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 pass
         return bool(ok)
 
+    def _pace(self):
+        """当前导入节奏档（safe / balance / fast）
+
+        老存档里没有 pace 这个键：按 stable 开关推一个（开=均衡，关=快）。
+        """
+        p = getattr(self, "pace", None)
+        if p not in cfg.PACES:
+            p = "balance" if getattr(self, "stable", True) else "fast"
+        return cfg.PACES[p]
+
+    def _pace_index(self):
+        p = getattr(self, "pace", None)
+        if p not in cfg.PACES:
+            p = "balance" if getattr(self, "stable", True) else "fast"
+        return cfg.PACE_ORDER.index(p)
+
     def _write_budget(self):
         """本 tick 允许花在写方块上的毫秒数
 
@@ -3284,8 +3422,11 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         这样一 tick 写多少完全由机器实测速度决定，帧率不会被导入拖崩。
         """
         b = self.budget
+        # 节奏档决定上限：safe 6ms / balance 8ms / fast 12ms。
+        # 急速模式只负责"等区块更短"，不再把单 tick 预算顶到 20ms。
         if self.turbo:
             b = max(b, cfg.WRITE_BUDGET_MS_TURBO)
+        b = min(b, self._pace()["budget"])
         scale = float(getattr(self, "_guard_scale", 1.0) or 1.0)
         return b * scale if scale < 1.0 else b
 
@@ -3317,6 +3458,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.probe = max(1, min(64, int(self._write_budget() * 0.12 / cost)))
         target = int(rate * self._write_budget())
         cap = cfg.WRITE_BATCH_MAX * (2 if self.turbo else 1)
+        # 节奏档同时封顶单 tick 块数，别让"自适应提速"把一帧撑大
+        cap = min(cap, int(self._pace()["blocks"]))
         if hit_time:
             # 撞到时间墙：压到目标值，宁可少写也不掉帧
             job.batch = max(cfg.WRITE_BATCH_MIN, min(job.batch, target))
@@ -3738,7 +3881,28 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             job.retry_cursor = 0
             job.retry_pass += 1
             return
+        if still and job.ta_ok and \
+                getattr(job, "hard_round", 0) < int(cfg.SEC_RETRY_ROUNDS):
+            # 绝对稳定：这一区还有写不进去的。普通重试轮数用完了也不放行——
+            # 先把本区的常加载**重挂一次**（等于踢一脚区块加载），等几 tick
+            # 再补齐，最多 SEC_RETRY_ROUNDS 轮。宁可这里慢，也不许缺块。
+            job.hard_round = getattr(job, "hard_round", 0) + 1
+            job.retry = still
+            job.retry_cursor = 0
+            job.retry_pass = 0
+            if getattr(job, "ta_roll", False):
+                self._ta_roll_add(job, sec)
+            job.waiting = True
+            job.wait_until = job.tick + int(cfg.SEC_RETRY_WAIT)
+            job.note = u"§e本区 %d 块未落地 · 重挂常加载补写（第 %d/%d 轮）" % (
+                len(still), job.hard_round, int(cfg.SEC_RETRY_ROUNDS))
+            return
         job.retry = still
+        if still:
+            # 硬补也用完了：记成"遗留"，并挂到收尾补水名单上最后再试一次
+            # （收尾阶段同样会挂常加载），结算里会如实报出来，绝不假装成功。
+            job.sec_leftover += len(still)
+            job.wash_idx.extend(still)
         if sec is not None and sec.get("frail"):
             job.phase = "frail"
             job.frail_cursor = 0
@@ -4001,6 +4165,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         job.pb_tag = None
         job.retry = []
         job.retry_cursor = 0
+        job.hard_round = 0
         job.item_queue = []
         job.item_cursor = 0
         if job.sec_i >= len(job.sections):
@@ -4016,7 +4181,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         液体刻意排在最后：先放固体骨架，水灌进去才有"池底池壁"接着，
         否则水会顺着还没放方块的地方先流成一片。
         """
-        if job.mobs and job.mob_cursor < len(job.mobs):
+        if getattr(self, "mobs_on", True) and (
+                (job.mobs and job.mob_cursor < len(job.mobs))
+                or getattr(job, "mob_defer", None)):
             job.phase = "mobs"
             return
         if job.liquid_idx and job.liq_cursor < len(job.liquid_idx):
@@ -4027,9 +4194,17 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                     # 液体可能铺满整个结构，而人还停在最后一个分区：
                     # 先回结构中心把区块带起来，否则最后这一批水会写不进去
                     job.liq_armed = True
-                    self._tp_structure_center(job)
-                    job.waiting = True
-                    job.wait_until = job.tick + (6 if self.turbo else 30)
+                    if self.no_tp:
+                        # 绝对稳定：不传送。改成一格一格挂常加载（_step_liquid
+                        # 里按 96 格网格换区），水写到哪、区块就加载到哪。
+                        job.cover_key = None
+                        self._cover_del(job)
+                        job.waiting = True
+                        job.wait_until = job.tick + cfg.TA_COVER_WAIT
+                    else:
+                        self._tp_structure_center(job)
+                        job.waiting = True
+                        job.wait_until = job.tick + (6 if self.turbo else 30)
                     job.note = u"§9准备放液体（%d 格）" % len(job.liquid_idx)
             return
         if job.wash_idx and job.wash_cursor < len(job.wash_idx):
@@ -4089,8 +4264,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         unloaded = 0
         while cur < total:
             x, y, z, name, aux, states = blocks[cur]
-            cur += 1
             pos = (bx + x, by + y, bz + z)
+            if self.no_tp or (self.ta_mode and job.ta_ok):
+                # 不传送玩家时区块靠常加载：先挂上这一格再读，
+                # 否则整轮核对全是"未加载"，数字没有任何意义
+                if self._cover_need(job, pos[0], pos[1], pos[2]):
+                    job.vf_cursor = cur
+                    job.vf_miss = miss
+                    job.vf_unloaded = int(getattr(job, "vf_unloaded", 0) or 0) + unloaded
+                    return
+            cur += 1
             try:
                 got = comp.GetBlockNew(pos, dim)
             except Exception:
@@ -4105,7 +4288,7 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 break
         job.vf_cursor = cur
         job.vf_miss = miss
-        job.vf_unloaded = unloaded
+        job.vf_unloaded = int(getattr(job, "vf_unloaded", 0) or 0) + unloaded
         if cur < total:
             return
         job.vf_done = True
@@ -4118,71 +4301,226 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.tell(job.pid, u"§7其中 %d 块因区块未加载没能复核" % job.vf_unloaded)
         self._final_phase(job)
 
-    def _step_mobs(self, job):
-        """生成结构里的实体
+    def _engine_entity(self):
+        """拿"创建引擎实体"的组件（拿不到就返回 None）
 
-        实测 35/486 个结构带 entities（矿车 / 船 / 骆驼 / 猪灵 / 掉落物）。
-        掉落物（minecraft:item）走 SpawnItemToLevel 把物品 NBT 完整带过去；
-        其余用 /summon 指令（位置 + 默认 NBT，深 NBT 刷怪引擎没有公开入口）。
+        比 /summon 强的地方：能拿到 entityId，之后可以设名字、让乘客骑上去。
+        不同版本的接口名不完全一样，这里按能力探测，探测不到就退回 summon。
+        """
+        try:
+            comp = self.factory.CreateEngineEntity(self.levelId)
+        except Exception:
+            return None
+        if comp is None or not hasattr(comp, "CreateEngineEntityByTypeStr"):
+            return None
+        return comp
+
+    def _mob_name(self, nbt):
+        """实体自定义名字（告示牌式结构里常见 "&e守卫" 这种带颜色码的）"""
+        for k in ("CustomName", "customName", "NameTag"):
+            v = nbt.get(k)
+            if v is None:
+                continue
+            v = _val(v)
+            is_text = (isinstance(v, basestring) if str is bytes
+                       else isinstance(v, str))
+            if is_text and v.strip():
+                return util.u(v)
+        return u""
+
+    def _apply_mob_attrs(self, eid, nbt):
+        """补上生命值这类"没有 NBT 直生接口时也能设"的属性
+
+        完整状态（幼年/驯服/鞍/颜色/手持）只能靠 CreateEngineEntityByNBT；
+        这里兜底把血量对齐，至少不会出现"结构里是残血守卫、刷出来满血"。
+        拿不到枚举/组件就安静跳过，绝不因为一个属性把整只生物刷失败。
+        """
+        hp = _val(nbt.get("Health"))
+        try:
+            hp = float(hp)
+        except (TypeError, ValueError):
+            return
+        if hp <= 0:
+            return
+        attr_type = None
+        try:
+            attr_type = serverApi.GetMinecraftEnum().AttrType.HEALTH
+        except Exception:
+            attr_type = None
+        if attr_type is None:
+            return
+        try:
+            self.factory.CreateAttr(eid).SetAttrValue(attr_type, hp)
+        except Exception:
+            pass
+
+    def _spawn_item_entity(self, job, pos, nbt):
+        """掉落物：SpawnItemToLevel 能把 Item 里的 NBT 完整带过去"""
+        node = nbt.get("Item") or nbt.get("item") or {}
+        name = util.u(_val(node.get("Name"))) if node else u""
+        if not name:
+            return False
+        try:
+            count = int(_val(node.get("Count")) or 1)
+        except (TypeError, ValueError):
+            count = 1
+        try:
+            aux = int(_val(node.get("Damage")) or 0)
+        except (TypeError, ValueError):
+            aux = 0
+        comp = self._items()
+        if comp is None:
+            return False
+        try:
+            return bool(comp.SpawnItemToLevel(
+                {"itemName": name, "count": count, "auxValue": aux}, job.dim, pos))
+        except Exception:
+            return False
+
+    def _spawn_mob(self, job, item):
+        """生成一只生物：引擎直生优先，拿不到 entityId 就退回 /summon
+
+        返回 True/False；乘客（RideID 指向的主人还没刷出来）会挂到 job.mob_defer
+        里，等主体都刷完了再补。
+        """
+        x, y, z, ident, nbt = item
+        pos = (job.base[0] + x + 0.5, job.base[1] + y + 0.5, job.base[2] + z + 0.5)
+        if ident == u"minecraft:item":
+            return self._spawn_item_entity(job, pos, nbt)
+
+        name = self._mob_name(nbt)
+        uid = _val(nbt.get("UniqueID"))
+        ride = _val(nbt.get("RideID"))
+        parent = None
+        if ride is not None:
+            try:
+                parent = job.mob_eids.get(int(ride))
+            except (TypeError, ValueError):
+                parent = None
+            if parent is None:
+                # 主人还没刷出来：先记着，等这一批都生成完再回来骑
+                job.mob_defer.append(item)
+                return None
+
+        yaw = 0.0
+        rot = nbt.get("Rotation")
+        if isinstance(rot, (list, tuple)) and len(rot) >= 1:
+            try:
+                yaw = float(_val(rot[0]))
+            except (TypeError, ValueError):
+                yaw = 0.0
+
+        comp = self._engine_entity()
+        eid = None
+        if comp is not None:
+            # 先试"按 NBT 直生"：结构里那只生物的全部状态（幼年/驯服/鞍/颜色/
+            # 手持…）都在 nbt 里，走这条路才是真正还原，而不只是刷个同款出来。
+            # 接口不存在或签名不同就退回按类型创建。
+            if hasattr(comp, "CreateEngineEntityByNBT"):
+                try:
+                    eid = comp.CreateEngineEntityByNBT(
+                        _nbt_for_engine(nbt), pos, (yaw, 0.0), job.dim)
+                except Exception:
+                    eid = None
+            if not eid:
+                try:
+                    eid = comp.CreateEngineEntityByTypeStr(
+                        ident, pos, (yaw, 0.0), job.dim, False)
+                except Exception:
+                    eid = None
+        if not eid:
+            # 退回 /summon：老版本或特殊实体（画、盔甲架）走这条
+            cmdComp = self._command()
+            if cmdComp is None:
+                return False
+            cmd = u"/summon %s %.1f %.1f %.1f" % (ident, pos[0], pos[1], pos[2])
+            if rot:
+                cmd += u" %d" % int(yaw)
+            try:
+                return bool(cmdComp.SetCommand(util.b(cmd)))
+            except Exception:
+                return False
+
+        if uid is not None:
+            try:
+                job.mob_eids[int(uid)] = eid
+            except (TypeError, ValueError):
+                pass
+        if name:
+            try:
+                self.factory.CreateName(eid).SetName(name)
+            except Exception:
+                pass
+        self._apply_mob_attrs(eid, nbt)
+        if parent is not None:
+            # 乘客：让主人把它驮起来（船/矿车/马上面坐着的东西）
+            mounted = False
+            for fn in ("SetRider", "SetEntityRide"):
+                try:
+                    getattr(self.factory.CreateRide(parent), fn)(eid)
+                    mounted = True
+                    break
+                except Exception:
+                    continue
+            if mounted:
+                job.mob_riders += 1
+        return True
+
+    def _step_mobs(self, job):
+        """生成结构里的实体（矿车 / 船 / 生物 / 掉落物）
+
+        三件事比"能刷出来"更重要：
+          1. 区块必须在：不传送玩家时先挂这一格的常加载，否则 summon 静默失败；
+          2. 先把主体刷完再处理乘客，否则 RideID 找不到主人，马背上就空了；
+          3. 按时间收口：summon 比写方块还贵，一 tick 几只就够，绝不一口气刷几百。
         """
         total = len(job.mobs)
+        if not total and not job.mob_defer:
+            self._final_phase(job)
+            return
+        pace = self._pace()
+        budget = float(pace["mob_ms"])
+        limit = max(1, int(pace["mob"]))
+        t0 = time.time()
         n = 0
-        bx, by, bz = job.base
-        cmdComp = None
-        items = None
-        while job.mob_cursor < total and n < cfg.BATCH_MOB:
-            x, y, z, ident, nbt = job.mobs[job.mob_cursor]
+        while job.mob_cursor < total and n < limit:
+            item = job.mobs[job.mob_cursor]
+            x, y, z = item[0], item[1], item[2]
+            if self.no_tp or (self.ta_mode and job.ta_ok):
+                if self._cover_need(job, job.base[0] + x, job.base[1] + y,
+                                    job.base[2] + z):
+                    return              # 刚换格，等区块加载完再来刷这几只
             job.mob_cursor += 1
             n += 1
             try:
-                if ident == u"minecraft:item":
-                    # 掉落物：取 Item 字段还原成物品字典，直接生成到世界里
-                    node = nbt.get("Item") or nbt.get("item") or {}
-                    name = util.u(_val(node.get("Name")))
-                    if not name:
-                        job.mob_fail += 1
-                        continue
-                    count = int(_val(node.get("Count")) or 1)
-                    aux = int(_val(node.get("Damage")) or 0)
-                    if items is None:
-                        items = self._items()
-                    if items is None:
-                        job.mob_fail += 1
-                        continue
-                    pos = (bx + x + 0.5, by + y + 0.5, bz + z + 0.5)
-                    if items.SpawnItemToLevel(
-                            {"itemName": name, "count": count, "auxValue": aux},
-                            job.dim, pos):
-                        job.mob_ok += 1
-                    else:
-                        job.mob_fail += 1
-                    continue
-                if nbt.get("RideID"):
-                    # 是别的实体的乘客，先跳过（主人刷出来后再说，best-effort）
-                    job.mob_fail += 1
-                    continue
-                if cmdComp is None:
-                    cmdComp = self._command()
-                if cmdComp is None:
-                    job.mob_fail += 1
-                    continue
-                cmd = u"/summon %s %d.5 %d %d.5" % (ident, bx + x, by + y, bz + z)
-                rot = nbt.get("Rotation")
-                if isinstance(rot, (list, tuple)) and len(rot) >= 1:
-                    try:
-                        cmd += u" %d" % int(float(rot[0]))       # yaw
-                    except (TypeError, ValueError):
-                        pass
-                if cmdComp.SetCommand(util.b(cmd)):
+                ok = self._spawn_mob(job, item)
+                if ok is True:
                     job.mob_ok += 1
-                else:
+                elif ok is False:
                     job.mob_fail += 1
+                    if job.err is None:
+                        job.err = u"实体生成失败：" + util.short(util.u(item[3]), 24)
+                # None = 乘客已挂起，等主体刷完再补，先不计数
             except Exception:
                 job.mob_fail += 1
-                if job.err is None:
-                    job.err = u"实体生成失败：" + util.short(util.u(ident), 24)
+            if (n & 1) == 0 and (time.time() - t0) * 1000.0 >= budget:
+                break
 
         if job.mob_cursor >= total:
+            # 第二遍：把挂起的乘客补上（这时主体都已有 entityId）
+            while job.mob_defer:
+                item = job.mob_defer.pop(0)
+                try:
+                    ok = self._spawn_mob(job, item)
+                except Exception:
+                    ok = False
+                if ok is True:
+                    job.mob_ok += 1
+                elif ok is False:
+                    job.mob_fail += 1
+                if (time.time() - t0) * 1000.0 >= budget:
+                    self._final_phase(job)
+                    return
             self._final_phase(job)
 
     def _tp_structure_center(self, job):
@@ -4227,6 +4565,12 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         sealed = job.sealed
         while job.liq_cursor < total and n < limit:
             i = idx[job.liq_cursor]
+            if self.no_tp or (self.ta_mode and job.ta_ok):
+                # 不传送玩家：这一格所在的常加载网格没挂上就先挂，挂完等区块
+                # 加载好再回来写（游标不推进，所以不会漏块也不会重复）
+                b = blocks[i]
+                if self._cover_need(job, bx + b[0], by + b[1], bz + b[2]):
+                    return
             job.liq_cursor += 1
             n += 1
             x, y, z, name, aux, states = blocks[i]
@@ -4273,10 +4617,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         n = 0
         while job.wash_cursor < total:
             i = idx[job.wash_cursor]
-            job.wash_cursor += 1
-            n += 1
             x, y, z, name, aux, states = job.blocks[i]
             pos = (bx + x, by + y, bz + z)
+            if self.no_tp or (self.ta_mode and job.ta_ok):
+                # 不传送玩家：先把这个网格的常加载挂上，等区块加载完再核对/补写。
+                # 否则 GetBlockNew 读不到（cur is None）会被当成"没被冲掉"，
+                # 缺块就这么被无声放过——这正是要修的逻辑漏洞。
+                if self._cover_need(job, pos[0], pos[1], pos[2]):
+                    return
+            job.wash_cursor += 1
+            n += 1
             try:
                 cur = comp.GetBlockNew(pos, dim)
             except Exception:
@@ -4490,13 +4840,20 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         comp = self._blocks()
         if comp is None:
             return True
-        try:
-            b = job.blocks[sec["blocks"][0]]
-            got = comp.GetBlockNew((job.base[0] + b[0], job.base[1] + b[1],
-                                    job.base[2] + b[2]), job.dim)
-        except Exception:
-            return False
-        return got is not None
+        idx = sec["blocks"]
+        bx, by, bz = job.base
+        # 取首 / 中 / 尾三点：只探第一块会误判——交界处的区块可能只加载了一角，
+        # 第一块读得到、整区其实没起来，然后就大面积写失败（真机踩过）。
+        n = len(idx)
+        for k in (0, n // 2, n - 1):
+            try:
+                b = job.blocks[idx[k]]
+                got = comp.GetBlockNew((bx + b[0], by + b[1], bz + b[2]), job.dim)
+            except Exception:
+                return False
+            if got is None:
+                return False
+        return True
 
     def _prepare_section(self, job):
         """进入分区前的准备：跟随 TP + 防缺失时挂常加载区块"""
@@ -4505,6 +4862,18 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         tpd = self._tp_to_section(job)
         if tpd:
             job.tp_wait = 1
+        if job.ta_ok and getattr(job, "ta_roll", False):
+            # 滚动常加载：挂当前分区 -> 区块就绪就开工 -> 换区时先还再挂下一个。
+            # 这样大结构也不需要一口气占几十个名额，人也不用跟着跑。
+            # 等待用"上限 + 就绪探测"：区块一好立刻开工（通常 1~3 tick），
+            # 真正卡住时才等满 —— 上限给到 1 秒，别让没加载完就开写成片失败。
+            self._ta_roll_add(job, sec)
+            job.waiting = True
+            job.wait_until = job.tick + (cfg.TA_FIRST_WAIT if job.sec_i == 0
+                                         else max(int(cfg.TA_WAIT), 20))
+            job.ready_probe = True
+            job.tp_wait = 0
+            return
         if job.tp_wait > 0:
             # 刚跟随 TP 过来：普通模式等 2 秒让区块加载完；
             # 急速模式只等 0.3 秒（给 TP 包处理时间），其余写不进的靠分区末尾
@@ -4558,7 +4927,9 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         if sec is None or not sec["blocks"]:
             return
         x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
-        name = u"si_%d_%d" % (job.sec_i, len(sec["blocks"]))
+        # 固定槽位命名：同时只会挂一个分区，名字不需要带分区号；
+        # 带上分区号/块数的话，强退后的残留根本枚举不出来（cmd_tac 清不掉）
+        name = u"%ss_0" % cfg.AREA_PREFIX
         cmd = u"/tickingarea add %d %d %d %d %d %d %s" % (
             x1, y1, z1, x2, y2, z2, name)
         cmdComp = self._command()
@@ -4568,6 +4939,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 ok = bool(cmdComp.SetCommand(util.b(cmd)))
             except Exception:
                 ok = False
+            if not ok:
+                # 固定槽位会撞上上次强退留下的同名区：先删掉再挂一次，
+                # 不要因为一条残留就让这一区白等（更不要就这么写下去）
+                try:
+                    cmdComp.SetCommand(util.b(u"/tickingarea remove %s" % name))
+                    ok = bool(cmdComp.SetCommand(util.b(cmd)))
+                except Exception:
+                    ok = False
         if ok:
             job.areas.append(name)
         job.waiting = True
@@ -4589,6 +4968,10 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         没挂上（名额不够 / 命令组件缺失）时 ta_ok 是 False，照常跟传——
         否则整个导入会在没加载的区块上写成一片空气。
         """
+        if self.no_tp:
+            # 绝对稳定预设：一个人都不许动。区块全靠常加载拉起，
+            # 没拉起来宁可多等 + 重挂，也不把玩家拽到结构里去。
+            return 0
         if self.ta_mode and job.ta_ok:
             return 0
         sec = self._section(job)
@@ -4661,68 +5044,159 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         z1 = bz + z1
         z2 = bz + z2
 
-        # 按区块列切：边长上限换算成"每区跨几个 16 格区块"，边界对齐到区块，
-        # 这样既不会超出引擎的单区上限，也不会因为零头多占一个名额
-        per = max(1, int(cfg.TA_MAX_SIDE) // 16)
-        cx0 = x1 >> 4
-        cx1 = x2 >> 4
-        cz0 = z1 >> 4
-        cz1 = z2 >> 4
-        nx = (cx1 - cx0) // per + 1
-        nz = (cz1 - cz0) // per + 1
-        need = nx * nz
-        cap = max(1, int(cfg.TA_MAX_AREAS))
-        if need > cap:
-            self.tell(job.pid, u"§e纯常加载：结构 %dx%d 格需要 %d 个常加载区，"
-                               u"超过本插件上限 %d §7本次退回跟随 TP"
-                      % (x2 - x1 + 1, z2 - z1 + 1, need, cap))
-            return
+        # 一律走"滚动挂载"：正在写哪个分区就挂哪个，换区先还再挂下一个。
+        # 一次性铺满看着省事，其实有两个坑：
+        #   ① 640×640 按 96 格切要几十个名额，而世界默认只有 10 个；
+        #   ② 铺满的区会跟着 job.areas 在第一次换区时被整体回收，
+        #      后面那些分区反而变成"区块没加载"的裸奔状态——
+        #      大面积静默失败（44 万块写成空地）就是从这里来的。
         cmd = self._command()
         if cmd is None:
-            self.tell(job.pid, u"§c拿不到命令组件，纯常加载用不了 §7本次退回跟随 TP")
+            if self.no_tp:
+                self.tell(job.pid, u"§c拿不到命令组件，纯常加载用不了；"
+                                   u"§7绝对稳定模式不传送玩家，本次已中止")
+                self.job = None
+                self._gc_restore()
+                self.push(job.pid, self._page)
+            else:
+                self.tell(job.pid, u"§c拿不到命令组件，纯常加载用不了 "
+                                   u"§7本次退回跟随 TP")
             return
+        job.ta_roll = True
+        job.ta_ok = True
+        cap = max(1, int(cfg.TA_MAX_AREAS))
+        self.tell(job.pid, u"§a纯常加载：§f结构 %d×%d×%d 格，按分区滚动挂载 §7"
+                           u"（同时只占 1~%d 个名额，换区立刻还；导入结束全部删除）"
+                  % (int(x2 - x1 + 1), int(y2 - y1 + 1), int(z2 - z1 + 1), cap))
+        if not self.no_tp:
+            self.tell(job.pid, u"§7纯常加载模式：玩家不会被传送，可以站着做别的")
 
-        done = 0
-        fail = 0
-        for ix in _range(nx):
-            acx0 = cx0 + ix * per
-            acx1 = min(cx1, acx0 + per - 1)
-            ax1 = acx0 * 16
-            ax2 = acx1 * 16 + 15
-            for iz in _range(nz):
-                acz0 = cz0 + iz * per
-                acz1 = min(cz1, acz0 + per - 1)
-                az1 = acz0 * 16
-                az2 = acz1 * 16 + 15
-                name = u"%sta_%d" % (cfg.AREA_PREFIX, ix * nz + iz)
-                ok = False
+    def _ta_roll_add(self, job, sec):
+        """滚动常加载：只给**当前分区**挂，写完立刻还
+
+        640×640 的一座城按 96 格切要 49 个区，而世界默认只有 10 个（还得给别人
+        留位置）。既然一次挂不下，就没必要一次挂：写到哪个分区就挂哪个，
+        换区时先删再加下一个 —— 同一时刻 1~4 个，多大结构都能纯常加载。
+
+        名字带 AREA_PREFIX，删的时候只删自己的。
+        """
+        self._ta_roll_del(job)                 # 先还上一区的
+        if sec is None or not sec.get("blocks"):
+            return 0
+        x1, y1, z1, x2, y2, z2 = self._sec_box(job, sec)
+        cmd = self._command()
+        if cmd is None:
+            return 0
+        step = int(cfg.TA_MAX_SIDE)
+        cap = max(1, int(cfg.TA_MAX_AREAS))
+        made = []
+        ax = x1
+        while ax <= x2 and len(made) < cap:
+            az = z1
+            while az <= z2 and len(made) < cap:
+                bx2 = min(x2, ax + step - 1)
+                bz2 = min(z2, az + step - 1)
+                nm = u"%sr_%d" % (cfg.AREA_PREFIX, len(made))
                 try:
                     ok = bool(cmd.SetCommand(util.b(
                         u"/tickingarea add %d %d %d %d %d %d %s" %
-                        (int(ax1), int(y1), int(az1),
-                         int(ax2), int(y2), int(az2), name))))
+                        (int(ax), int(y1), int(az), int(bx2), int(y2),
+                         int(bz2), nm))))
                 except Exception:
                     ok = False
+                if not ok:
+                    # 同名残留（上次强退）或名额刚好被占：先删自己这个槽位再挂
+                    try:
+                        cmd.SetCommand(util.b(u"/tickingarea remove %s" % nm))
+                        ok = bool(cmd.SetCommand(util.b(
+                            u"/tickingarea add %d %d %d %d %d %d %s" %
+                            (int(ax), int(y1), int(az), int(bx2), int(y2),
+                             int(bz2), nm))))
+                    except Exception:
+                        ok = False
                 if ok:
-                    job.areas.append(name)
-                    done += 1
-                else:
-                    fail += 1
-        if not done:
-            self.tell(job.pid, u"§c常加载一个都没挂上（世界已有 10 个区域？）"
-                               u"§7本次退回跟随 TP")
+                    made.append(nm)
+                az += step
+            ax += step
+        job.ta_sec_areas = made
+        return len(made)
+
+    def _ta_roll_del(self, job):
+        """把当前分区那条滚动常加载还回去（只删 si_ 前缀的自己的名字）"""
+        names = getattr(job, "ta_sec_areas", None)
+        if not names:
             return
-        job.tp_wait = 1              # 首区走一次等待分支，给区块加载时间
-        job.ta_ok = True             # 挂上了才允许"不跟随 TP"
-        if fail:
-            self.tell(job.pid, u"§e纯常加载：§f%d 个区挂上、%d 个失败 "
-                               u"§7失败部分靠分区重试兜底，建议改用跟随 TP"
-                      % (done, fail))
-        else:
-            self.tell(job.pid, u"§a纯常加载：§f结构已挂 %d 个 tickingarea §7"
-                               u"（%d×%d×%d，玩家不跟随传送）"
-                      % (done, int(x2 - x1 + 1), int(y2 - y1 + 1),
-                         int(z2 - z1 + 1)))
+        cmd = self._command()
+        if cmd is not None:
+            for nm in names:
+                if not nm or not nm.startswith(cfg.AREA_PREFIX):
+                    continue
+                try:
+                    cmd.SetCommand(util.b(u"/tickingarea remove %s" % nm))
+                except Exception:
+                    pass
+        job.ta_sec_areas = []
+
+    # ------------------------------------------------ 单格滚动常加载（液体/补水）
+    def _cover_del(self, job):
+        """还掉"单格滚动"占的那一个常加载
+
+        名字固定是 si_c_0：既好回收，也不至于因为带坐标而在强退后枚举不出来。
+        """
+        if getattr(job, "cover_key", None) is None:
+            return
+        cmd = self._command()
+        if cmd is not None:
+            try:
+                cmd.SetCommand(util.b(u"/tickingarea remove %sc_0"
+                                      % cfg.AREA_PREFIX))
+            except Exception:
+                pass
+        job.cover_key = None
+
+    def _cover_need(self, job, x, y, z):
+        """保证 (x, y, z) 所在的常加载网格已经挂上（绝对稳定模式专用）
+
+        写方块阶段是"一区一挂"；到了液体 / 补水阶段，方块散在整个结构里，
+        就按 TA_MAX_SIDE=96 的网格滚动挂：写到哪一格就挂哪一格，同一时刻
+        只占 1 个名额。玩家一步都不用动。
+
+        返回 True  = 这一帧刚换过网格，区块还没加载，调用方先等 TA_COVER_WAIT
+                     再来写**同一格**（所以调用前不能推进游标）；
+        返回 False = 网格没变（99% 的情况），直接动手。
+        """
+        step = int(cfg.TA_MAX_SIDE)
+        key = (int(x) // step, int(z) // step)
+        if getattr(job, "cover_key", None) == key:
+            return False
+        cmd = self._command()
+        if cmd is None:
+            return False
+        self._cover_del(job)
+        ax = key[0] * step
+        az = key[1] * step
+        # y 只取这一格上下各半区：常加载对体积也有上限，整根柱子会超
+        ay = max(-64, min(int(y) - step // 2, 320 - step))
+        nm = u"%sc_0" % cfg.AREA_PREFIX
+        add = u"/tickingarea add %d %d %d %d %d %d %s" % (
+            ax, ay, az, ax + step - 1, ay + step - 1, az + step - 1, nm)
+        ok = False
+        try:
+            ok = bool(cmd.SetCommand(util.b(add)))
+        except Exception:
+            ok = False
+        if not ok:
+            # 同名残留（上次强退）或名额刚好满了：先把自己这个槽位删掉再挂
+            try:
+                cmd.SetCommand(util.b(u"/tickingarea remove %s" % nm))
+                ok = bool(cmd.SetCommand(util.b(add)))
+            except Exception:
+                ok = False
+        job.cover_key = key if ok else None
+        # 换格之后必须等区块加载，否则这一格的写入会静默失败
+        job.waiting = True
+        job.wait_until = job.tick + int(cfg.TA_COVER_WAIT)
+        return True
 
     def _drop_area(self, job):
         """摘掉本任务挂的常加载
@@ -4743,10 +5217,57 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 except Exception:
                     pass
 
+    def _area_slots(self, with_map=False):
+        """本插件可能用到的**全部**常加载槽位名
+
+        命名刻意做成固定槽位（不带分区号、块数、坐标），就是为了让"枚举 →
+        逐个删除"成为可能：强退/崩服留下的残留也能靠这几个名字扫干净。
+        """
+        p = cfg.AREA_PREFIX
+        names = []
+        for i in _range(max(1, int(cfg.TA_MAX_AREAS))):
+            names.append(u"%sta_%d" % (p, i))      # 整结构覆盖
+            names.append(u"%sr_%d" % (p, i))       # 分区滚动
+        for i in _range(4):
+            names.append(u"%ss_%d" % (p, i))       # 跟随 TP 时的单区
+        names.append(u"%sc_0" % p)                 # 液体/补水单格滚动
+        for i in _range(64):
+            names.append(u"%spf_%d" % (p, i))      # 预取
+            if with_map:
+                names.append(u"%smap_%d" % (p, i))  # 挂画
+        return names
+
+    def _sweep_areas(self, job=None, with_map=False):
+        """兜底清扫：把所有 si_ 槽位逐个 remove
+
+        收尾时除了删"记录过的名字"，再按固定槽位扫一遍——中途异常、记录漏了、
+        上一次崩服残留，全都能清掉。删除不存在的区不会报错，代价只有几十条
+        命令。**只用定点 remove，永远不 remove_all**（别人的指令区不能碰）。
+        """
+        cmd = self._command()
+        if cmd is None:
+            return 0
+        n = 0
+        for nm in self._area_slots(with_map=with_map):
+            try:
+                cmd.SetCommand(util.b(u"/tickingarea remove %s" % nm))
+                n += 1
+            except Exception:
+                pass
+        if job is not None:
+            job.areas_cleaned = getattr(job, "areas_cleaned", 0) + n
+        return n
+
     def _clear_areas(self, job):
         self._drop_area(job)
+        self._ta_roll_del(job)          # 滚动挂载的那一条也要还
+        self._cover_del(job)            # 液体/补水阶段的单格常加载
         if getattr(job, "pf", None):
             self._drop_pf(job, len(job.sections) + 1)
+        # 最后扫一遍固定槽位：保证导入结束后一条都不剩（不止"记录过的那些"）。
+        # 这里不碰 si_map_*：挂画任务的常加载由 _map_ta_del 逐格回收，
+        # 导入收尾时去扫会误删正在画的图。
+        self._sweep_areas(job)
 
     def _restore_block(self, job, comp, offset, pos, dim):
         """写完实体数据后核对方块有没有被引擎换掉，变了就重放
@@ -4930,6 +5451,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
                 msg += u" §7· 实体 §f%d" % job.mob_ok
                 if job.mob_fail:
                     msg += u" §c(%d 失败)" % job.mob_fail
+                if job.mob_riders:
+                    msg += u" §7· 乘客 §f%d" % job.mob_riders
             if job.liq_ok or job.liq_fail:
                 msg += u" §7· 液体 §f%d" % job.liq_ok
                 if job.liq_fail:
@@ -4939,6 +5462,14 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             if job.seal_fixes:
                 msg += u" §7· 守水补写 §f%d" % job.seal_fixes
             self.tell(job.pid, msg)
+            if job.sec_leftover:
+                # 硬补也补不上：如实报出来，不假装成功（以前这里静默吞掉，
+                # 结果就是"提示完成、地上缺一片"）
+                self.tell(job.pid, u"§c有 %d 块始终没写进去 §7（那几片区块一直没加载）"
+                                   u"· 可换 §f绝对稳定 §7预设重试，或跑 §f/structureim tac §7清残留"
+                          % job.sec_leftover)
+            if self.ta_mode:
+                self.tell(job.pid, u"§7常加载：本次挂的 §fsi_ §7区已全部删除 §7（不留下任何痕迹）")
             # 把时间拆开：慢了到底是"写不动"还是"一直在等区块"，一眼能看出来
             try:
                 total_s = job.tick / 20.0
@@ -5057,6 +5588,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
         u"freeze": "freeze",
         u"maparea": "map_area",
         u"ta": "ta_mode",
+        u"notp": "no_tp",
+        u"mobs": "mobs_on",
         u"verify": "verify",
     }
 
@@ -5074,6 +5607,16 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             self.map_speed = 2
             if not self.split_size:
                 self.split_size = int(cfg.SPLIT_SIZE_MAX)
+            self._save()
+            return
+        if key == u"pace":
+            i = self._pace_index()
+            if delta > 0:
+                i = min(2, i + 1)
+            elif delta < 0:
+                i = max(0, i - 1)
+            self.pace = cfg.PACE_ORDER[i]
+            self.stable = (self.pace != "fast")
             self._save()
             return
         if key == u"nbtlimit":
@@ -5132,6 +5675,8 @@ class SiServerSystem(serverApi.GetServerSystemCls()):
             "freezetime": int(round(self.freeze_secs)),
             "bigwait": int(round(self.big_wait)),
             "nbtlimit": int(self.nbt_limit or 0),
+            "pace": int(self._pace_index()),
+            "mobs": 1 if getattr(self, "mobs_on", True) else 0,
         }
 
     def push(self, pid, page=0):

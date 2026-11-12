@@ -71,6 +71,14 @@ TA_MAX_SIDE = 96          # 单个方形常加载的边长上限（引擎对超�
 TA_MAX_AREAS = 9          # 本插件最多占几个名额（世界默认 10 个，留 1 个给别人）
 AREA_PREFIX = "si_"       # 本插件挂的常加载统一前缀，清理只认这个
 
+# ------------------------------------------------- 绝对稳定（不 TP / 100% / 无痕）
+# 分区级硬补：一个分区的方块写完后，失败块会带着常加载重挂再补，最多几轮。
+# 轮数用完仍补不上（区块彻底不加载）才记成"遗留"，并在结算里报出来。
+SEC_RETRY_ROUNDS = 4      # 一个分区最多硬补几轮（每轮重挂常加载）
+SEC_RETRY_WAIT = 8        # 重挂后等多少 tick 再补（给区块加载留时间）
+TA_COVER_WAIT = 3         # 液体 / 补水阶段换常加载格后等多少 tick 再动手
+TA_KICK_AFTER = 40        # 常加载挂上后连续多少 tick 探不到区块 -> 认为没生效，重挂一次
+
 # ---------------------------------------------------------------- 扫描
 MAX_DEPTH = 10            # 目录递归深度
 MAX_ENTRIES = 400         # 最多收录多少个结构
@@ -84,6 +92,26 @@ BATCH = 600               # 每 tick 写入多少方块（自适应算法的起�
 WRITE_BUDGET_MS = 12.0         # 普通模式：每 tick 最多花多少毫秒写方块（≈旧版固定 600 块）
 WRITE_BUDGET_MS_TURBO = 20.0   # 急速模式：几乎榨满一 tick（50ms 里留 20ms 写）
 WRITE_BATCH_MIN = 24           # 单 tick 最少写多少（保证推进）
+# ---------------------------------------------------------------- 导入节奏（三档）
+# 「宁可慢，也别卡、别漏」是默认取向。三档只影响"每 tick 干多少活"：
+#   safe    单 tick 6ms / 400 块 / 生物 4 只 —— 基本看不出掉帧
+#   balance 8ms / 800 块 / 6 只             —— 默认推荐值，慢得很少
+#   fast    12ms / 1500 块 / 10 只          —— 想快就切这档，大结构仍然稳
+PACES = {
+    "safe":    {"budget": 6.0,  "blocks": 400,  "mob": 4,  "mob_ms": 3.0},
+    "balance": {"budget": 8.0,  "blocks": 800,  "mob": 6,  "mob_ms": 4.0},
+    "fast":    {"budget": 12.0, "blocks": 1500, "mob": 10, "mob_ms": 6.0},
+}
+PACE_DEFAULT = "safe"
+PACE_LABELS = [u"稳", u"均衡", u"快"]
+PACE_ORDER = ["safe", "balance", "fast"]
+
+STABLE_DEFAULT = True
+STABLE_BUDGET_MS = 8.0         # 兼容老引用（= balance 档）
+STABLE_BATCH_CAP = 800
+MOB_SLICE_MS = 4.0
+BATCH_MOB = 6
+
 WRITE_BATCH_MAX = 3000         # 普通模式单 tick 上限（急速自动 ×2）
 WRITE_BATCH_START = 200        # 起步批量：慢机不会第一 tick 就卡 200ms，三几 tick 自己涨上去
 WRITE_PROBE_STEP = 24          # 探时间的初始间隔（之后按实测单块耗时自动收紧）
@@ -160,15 +188,20 @@ PALETTE_MIN = 128             # 分区块数少于这个就不折腾，直接逐
 PRESETS = {
     # 稳：只求不漏块、不卡，速度放最后（慢一点但最保险）
     "safe": {"turbo": 0, "budget": 10, "threads": 1, "parallel": 1,
-             "verify": 1, "mapspeed": 0, "splitz": 0},
+             "verify": 1, "mapspeed": 0, "splitz": 0, "ta": 0, "notp": 0,
+             "pace": "safe"},
     # 均衡：默认推荐，写入提速但等待仍按就绪探测走
     "balance": {"turbo": 1, "budget": 14, "threads": 1, "parallel": 2,
-                "verify": 1, "mapspeed": 1, "splitz": 0},
-    # 极速：640×640 地图画 120 秒的目标档（地图极速 + 分区 128 + 满预算）
-    "turbo": {"turbo": 1, "budget": 20, "threads": 2, "parallel": 3,
-              "verify": 1, "mapspeed": 2, "splitz": 128},
+                "verify": 1, "mapspeed": 1, "splitz": 0, "ta": 0, "notp": 0,
+                "pace": "balance"},
+    # 绝对稳定：全程**不传送玩家**，靠纯常加载把区块拉起来；分区收尾失败块
+    # 重新挂常加载硬补，直到全部落地（100% 方块）；导入结束把所有 si_ 常加载
+    # 一条不剩地删掉（无一丝痕迹）。速度慢一点，但人可以站着不动干别的。
+    "stable": {"turbo": 0, "budget": 14, "threads": 1, "parallel": 1,
+               "verify": 0, "mapspeed": 0, "splitz": 0, "ta": 1, "notp": 1,
+               "pace": "safe"},
 }
-PRESET_LABELS = {"safe": u"稳", "balance": u"均衡", "turbo": u"极速"}
+PRESET_LABELS = {"safe": u"稳", "balance": u"均衡", "stable": u"绝对稳定"}
 TP_LOAD_WAIT_TURBO = 6    # 急速模式：TP 后只等 0.3 秒，剩余交给写失败自动重试
 TP_BIG_JUMP = 128         # 跟随 TP 一步跳多远算"跨行远传"（竖排导入换行最典型）
 TP_BIG_WAIT = 80          # 跨行远传后强制等多少 tick（4 秒）让区块追上，再恢复原速
@@ -205,7 +238,6 @@ MAP_DEFAULT = False       # 对齐地图边缘导入，导完自动给玩家编�
 MAP_SIZE = 128            # 一张地图覆盖 128×128 格
 FORWARD = 3.0             # 放在身前多少格
 BATCH_ENT = 200           # 每 tick 写多少个方块实体
-BATCH_MOB = 8             # 每 tick 生成多少个实体（summon 指令较慢，控制在个位数）
 
 # ---------------------------------------------------------------- 分块模式
 # 把大结构切成"数据量"小于阈值的分块依次导入（把一个文件当多个小文件处理），

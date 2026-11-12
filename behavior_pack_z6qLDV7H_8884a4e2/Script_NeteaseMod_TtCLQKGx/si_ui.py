@@ -15,6 +15,8 @@ ROOT = "/si_root"
 
 ROWS = 6
 TITLE = u"结构导入器"
+# 注意：这个模块的全局里没有 si_cfg，凡是配置相关的中文标签都在本地写死
+PACE_LABELS = (u"稳", u"均衡", u"快")
 
 try:
     _text = unicode
@@ -256,7 +258,7 @@ SET_ROWS = [
     ("tick",       u"防缺失",     "bool"),
     ("chunk",      u"分块模式",   "bool"),
     ("map",        u"地图画模式", "bool"),
-    ("turbo",      u"急速模式",   "bool"),
+    ("pace",       u"导入节奏",   "pace"),
     ("freeze",     u"冻结时间",   "bool"),
     ("ta",         u"纯常加载",   "bool"),
     ("verify",     u"回读核对",   "bool"),
@@ -270,6 +272,7 @@ SET_ROWS = [
     ("freezetime", u"守水秒数",   "sec"),
     ("bigwait",    u"跨行降速",   "sec"),
     ("nbtlimit",   u"物品NBT",    "kb"),
+    ("mobs",       u"生物导入",   "bool"),
 ]
 
 
@@ -282,6 +285,8 @@ def _opt_text(kind, value):
         return u"§a开" if v else u"§7关"
     if kind == "maparea":
         return u"方形" if v else u"圆形"
+    if kind == "pace":
+        return PACE_LABELS[max(0, min(2, v))]
     if kind == "splitz":
         return u"自动" if v <= 0 else u"%d 格" % v
     if kind == "mapspeed":
@@ -327,7 +332,7 @@ class SiSettingScreen(ScreenNode):
             self._label(self.ROOT + "/si_r%d_name" % i, row[1])
         self._touch("si_pre_safe", self._on_preset("safe"))
         self._touch("si_pre_balance", self._on_preset("balance"))
-        self._touch("si_pre_turbo", self._on_preset("turbo"))
+        self._touch("si_pre_turbo", self._on_preset("stable"))
         self._touch("si_set_close", self._on_close)
         # 底部那个「关闭」按钮：右上角的 ✕ 太小，很多人都没找到
         self._touch("si_set_close2", self._on_close)
